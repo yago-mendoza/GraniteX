@@ -173,20 +173,23 @@ impl UiState {
                     ui.separator();
 
                     // Operations
-                    let ops = [
+                    let active_ops: &[(Tool, &str)] = &[
                         (Tool::Select,  "Select"),
                         (Tool::Extrude, "Extrude"),
                         (Tool::Cut,     "Cut"),
                         (Tool::Inset,   "Inset"),
-                        (Tool::Fillet,  "Fillet"),
                     ];
-                    for (tool, label) in &ops {
+                    for (tool, label) in active_ops {
                         let btn = egui::Button::new(egui::RichText::new(*label).size(11.0))
                             .selected(self.active_tool == *tool);
                         if ui.add(btn).clicked() {
                             self.active_tool = if self.active_tool == *tool { Tool::Select } else { *tool };
                         }
                     }
+                    // Fillet — not yet implemented, shown disabled
+                    ui.add_enabled(false, egui::Button::new(
+                        egui::RichText::new("Fillet").size(11.0).weak()
+                    )).on_disabled_hover_text("Coming soon");
 
                     ui.separator();
 

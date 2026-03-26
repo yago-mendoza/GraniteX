@@ -152,12 +152,15 @@ impl App {
             .map(|p| sketch.to_3d(*p))
             .collect();
         let normal = sketch.plane.normal;
-        let parent_face_id = sketch.face_id;
 
-        // SolidWorks behavior: delete the parent face and create the contour flush.
-        // The area outside the contour is lost, but extrude will create proper geometry.
-        renderer.mesh.delete_face(parent_face_id);
-        renderer.mesh.add_polygon_face_flush(&points_3d, normal);
+        // Keep the parent face intact — just overlay the contour on top.
+        // SolidWorks doesn't modify geometry until an operation (extrude/cut) is applied.
+        // The tiny z-offset prevents z-fighting with the parent face underneath.
+        let new_face_id = renderer.mesh.add_polygon_face(&points_3d, normal);
         renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+
+        // Auto-select the new face so user can immediately extrude
+        renderer.selected_face = Some(new_face_id);
+        renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(new_face_id));
     }
 }

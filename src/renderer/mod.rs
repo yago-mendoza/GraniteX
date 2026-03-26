@@ -392,9 +392,9 @@ impl Renderer {
                 // Wireframe only mode
                 self.mesh_pipeline.draw_wireframe(&mut pass);
             } else {
-                // SolidWorks style: filled faces + edge overlay
                 self.mesh_pipeline.draw(&mut pass);
-                self.mesh_pipeline.draw_edges(&mut pass);
+                // Edge overlay disabled until crash is diagnosed
+                // self.mesh_pipeline.draw_edges(&mut pass);
             }
             self.preview.draw(&mut pass);
             self.sketch_renderer.draw(&mut pass);

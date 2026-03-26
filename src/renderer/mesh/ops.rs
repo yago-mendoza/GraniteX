@@ -31,7 +31,7 @@ impl Mesh {
 
         // For cylindrical extrusions (many sides), use a single face_id with smooth normals.
         // For simple extrusions (4 sides = box), use individual face_ids with coplanar merging.
-        let is_cylindrical = n > 6;
+        let is_cylindrical = n > 4;
         let cylinder_face_id = if is_cylindrical {
             let id = self.next_face_id;
             self.next_face_id += 1;
@@ -119,7 +119,7 @@ impl Mesh {
             .map(|p| (Vec3::from(*p) + offset).into())
             .collect();
 
-        let is_cylindrical = n > 6;
+        let is_cylindrical = n > 4;
         let cylinder_face_id = if is_cylindrical {
             let id = self.next_face_id;
             self.next_face_id += 1;
@@ -260,12 +260,14 @@ impl Mesh {
     }
 
     /// Add a polygon face, slightly offset along normal to prevent z-fighting.
+    #[allow(dead_code)]
     pub fn add_polygon_face(&mut self, points: &[Vec3], normal: Vec3) -> u32 {
-        self.add_polygon_face_inner(points, normal, normal * 0.0003)
+        self.add_polygon_face_inner(points, normal, normal * 0.003)
     }
 
     /// Add a polygon face flush with the surface (no z-offset).
     /// Use when the parent face has been deleted so there's nothing to z-fight with.
+    #[allow(dead_code)]
     pub fn add_polygon_face_flush(&mut self, points: &[Vec3], normal: Vec3) -> u32 {
         self.add_polygon_face_inner(points, normal, Vec3::ZERO)
     }
@@ -294,63 +296,6 @@ impl Mesh {
         }
 
         face_id
-    }
-
-    /// Compute boundary edges for line rendering.
-    #[allow(dead_code)]
-    /// Extract boundary edges — edges where adjacent triangles have DIFFERENT face_ids.
-    /// Uses position-based hashing (not vertex indices) because faces don't share vertices.
-    pub fn boundary_edges(&self) -> Vec<[f32; 3]> {
-        use std::collections::HashMap;
-
-        // Hash a position to a canonical integer key for dedup.
-        let hash_pos = |p: [f32; 3]| -> i64 {
-            let x = (p[0] * 10000.0).round() as i64;
-            let y = (p[1] * 10000.0).round() as i64;
-            let z = (p[2] * 10000.0).round() as i64;
-            x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663) ^ z.wrapping_mul(83492791)
-        };
-
-        // Map: (pos_hash_a, pos_hash_b) → set of face_ids touching this edge.
-        // Also store the actual positions for rendering.
-        let mut edge_data: HashMap<(i64, i64), (Vec<u32>, [f32; 3], [f32; 3])> = HashMap::new();
-
-        for chunk in self.indices.chunks(3) {
-            if chunk.len() < 3 { continue; }
-            let face_id = self.vertices[chunk[0] as usize].face_id;
-
-            let idx = [chunk[0] as usize, chunk[1] as usize, chunk[2] as usize];
-            for &(ai, bi) in &[(idx[0], idx[1]), (idx[1], idx[2]), (idx[2], idx[0])] {
-                let pa = self.vertices[ai].position;
-                let pb = self.vertices[bi].position;
-                let ha = hash_pos(pa);
-                let hb = hash_pos(pb);
-                let key = if ha <= hb { (ha, hb) } else { (hb, ha) };
-
-                edge_data.entry(key)
-                    .and_modify(|(faces, _, _)| {
-                        if !faces.contains(&face_id) {
-                            faces.push(face_id);
-                        }
-                    })
-                    .or_insert((vec![face_id], pa, pb));
-            }
-        }
-
-        let mut lines = Vec::new();
-        for (_, (faces, pa, pb)) in &edge_data {
-            // Boundary = edge touching 2+ different faces, or edge on mesh boundary (1 face)
-            let is_boundary = faces.len() != 1 || {
-                // Check if this is a mesh boundary (silhouette) edge
-                // For now, only draw edges between different faces
-                false
-            };
-            if is_boundary && faces.len() > 1 {
-                lines.push(*pa);
-                lines.push(*pb);
-            }
-        }
-        lines
     }
 
     // --- Helpers ---

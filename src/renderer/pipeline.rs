@@ -319,36 +319,39 @@ impl MeshPipeline {
             }
         }
 
-        // Build face normal cache for angle check.
-        let mut face_normals: HashMap<u32, glam::Vec3> = HashMap::new();
+        // Build face normal cache for coplanarity check.
+        let mut face_normals: std::collections::HashMap<u32, glam::Vec3> = std::collections::HashMap::new();
         for v in &mesh.vertices {
             face_normals.entry(v.face_id).or_insert_with(|| glam::Vec3::from(v.normal));
         }
 
-        // Pass 2: Emit edges where adjacent faces meet at an angle.
-        // Skip: internal edges (same face_id) and edges between coplanar faces
-        // (same normal direction — e.g., inset connecting quads on a flat plane).
-        // SolidWorks only draws edges where the surface angle changes.
+        // Pass 2: Emit boundary edges.
+        // - 1 face → mesh boundary (open surface edge) → always draw
+        // - 2+ faces, normals differ → face boundary → draw (SolidWorks-style)
+        // - 2+ faces, normals same → coplanar (e.g. inset quads) → skip
+        // Internal triangle diagonals (same face_id on both sides) are automatically excluded
+        // because they contribute only 1 entry to the face_id set.
         let mut positions: Vec<f32> = Vec::new();
         for (_, (faces, pa, pb)) in &edge_faces {
-            if faces.len() <= 1 {
-                continue; // internal edge or mesh boundary
+            if faces.len() == 1 {
+                // Mesh boundary edge — always draw
+                positions.extend_from_slice(pa);
+                positions.extend_from_slice(pb);
+                continue;
             }
 
-            // Check if any pair of faces at this edge has a meaningful angle between them.
+            // Multi-face edge: only draw if normals differ (~1.8°+ angle)
             let face_ids: Vec<u32> = faces.iter().copied().collect();
             let mut has_angle = false;
             for i in 0..face_ids.len() {
                 for j in (i + 1)..face_ids.len() {
                     if let (Some(na), Some(nb)) = (face_normals.get(&face_ids[i]), face_normals.get(&face_ids[j])) {
-                        // Draw if normals differ by more than ~5 degrees
-                        if na.dot(*nb).abs() < 0.996 {
+                        if na.dot(*nb).abs() < 0.9995 {
                             has_angle = true;
                         }
                     }
                 }
             }
-
             if has_angle {
                 positions.extend_from_slice(pa);
                 positions.extend_from_slice(pb);

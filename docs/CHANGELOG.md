@@ -102,6 +102,12 @@
 - **Inset preview**: Teal transparent ghost shows the inset result in real-time as you adjust the amount slider. Same architecture as extrude/cut previews.
 - **Smooth camera transitions**: View presets (F/T/R/Iso) now animate with 0.25s ease-out cubic. Camera has `target_yaw/pitch` animation state, updated per frame.
 - **Edge rendering**: Dark line overlay on face boundaries (SolidWorks-style). Separate pipeline with depth bias to render on top of filled faces.
+
+### Rendering Bug Fixes
+- **Sketch contours no longer create double faces**: Drawing a contour on a face now DELETES the parent face and creates the contour FLUSH (no z-offset). Previously, the contour sat 0.002 units above the parent → z-fighting, shading artifacts, visible seam.
+- **Circle segments increased**: 48 → 64 for finer tessellation on circular sketches.
+- **Cylinder extrude uses smooth radial normals**: When extruding a face with >6 boundary corners (detected as cylindrical), side wall vertices get per-vertex radial normals instead of flat per-face normals. All wall segments share one face_id → no internal edges drawn → smooth cylinder appearance.
+- **Edge rendering uses LineList topology**: Boundary edges rendered as actual line segments (position-only vertex buffer) instead of PolygonMode::Line on triangles. Only edges between different face_ids are drawn → cube internal diagonals never appear.
 - **Zoom-to-fit**: Home key frames the entire model in the viewport.
 - **Preview colors**: Extrude = blue, Cut = red, Inset = teal. Color passed via uniform to the preview shader.
 
@@ -110,3 +116,24 @@
 - MeshPipeline SceneUniform expanded: `hovered_face: i32` field added alongside `selected_face`.
 - Renderer tracks `hovered_face: Option<u32>`, only updates uniform when hover changes (avoids unnecessary GPU writes).
 - All 3 operation tools (Extrude, Cut, Inset) now have consistent preview → apply → undo workflow.
+
+## 2026-03-26 — Session 7: SolidWorks Rendering Parity
+
+### Edge Rendering Overhaul
+- **Mesh boundary edges now drawn**: Open surfaces (after face deletion) show their boundary edges. Previously all single-face edges were suppressed.
+- **Coplanarity filter**: Edges between coplanar faces (same normal, <1.8° angle) are suppressed — matches SolidWorks behavior. Inset connecting quads on a flat plane don't show internal edge lines.
+- **Removed dead XOR-hash boundary_edges()**: Old method in mesh/ops.rs used collision-prone XOR hash. Replaced by tuple-based `PosKey` in pipeline.rs (collision-free).
+
+### Sketch-to-Face Workflow Fix
+- **Parent face preserved**: Drawing a contour no longer deletes the parent face. Contour sits on top with z-offset (0.003). This prevents creating holes in the mesh.
+- **Auto-selection**: After closing a sketch contour, the new face is automatically selected (blue highlight). User can immediately extrude without clicking.
+- **Z-offset increased**: 0.0003 → 0.003 for reliable depth separation and picking.
+
+### Cylinder Smoothing
+- **Lowered cylindrical threshold**: n>6 → n>4. Pentagons and hexagons now get smooth radial normals instead of flat per-face normals.
+
+### UX Polish
+- **Context menu wired**: Extrude/Cut/Inset from right-click context menu now switches to the corresponding tool (was silently ignored).
+- **Fillet button disabled**: Shown grayed-out with "Coming soon" tooltip instead of doing nothing.
+- **Ctrl+Shift+Z = Redo**: Alternative redo shortcut (SolidWorks convention).
+- **Ctrl+O = Import**: Keyboard shortcut for file import dialog.

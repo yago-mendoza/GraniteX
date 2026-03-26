@@ -63,12 +63,20 @@ impl App {
                     self.delete_selected_face();
                     self.ui.toasts.push(crate::ui::Toast::new("Face deleted".into()));
                 }
+                ContextAction::Extrude => {
+                    self.ui.active_tool = Tool::Extrude;
+                }
+                ContextAction::Cut => {
+                    self.ui.active_tool = Tool::Cut;
+                }
+                ContextAction::Inset => {
+                    self.ui.active_tool = Tool::Inset;
+                }
                 ContextAction::ZoomToFace => {
                     if let Some(r) = &mut self.renderer {
                         r.fit_camera();
                     }
                 }
-                _ => {}
             }
         }
 

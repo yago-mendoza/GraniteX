@@ -150,13 +150,25 @@ impl App {
                         }
                     }
 
-                    // Ctrl+Y = Redo
+                    // Ctrl+Y or Ctrl+Shift+Z = Redo
                     Key::Character(c) if c.as_str() == "y" && ctrl => {
                         if let Some(r) = &mut self.renderer {
                             if self.history.redo(&mut r.mesh) {
                                 r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);
                             }
                         }
+                    }
+                    Key::Character(c) if c.as_str() == "Z" && ctrl && self.input.modifiers.shift_key() => {
+                        if let Some(r) = &mut self.renderer {
+                            if self.history.redo(&mut r.mesh) {
+                                r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);
+                            }
+                        }
+                    }
+
+                    // Ctrl+O = Import file
+                    Key::Character(c) if c.as_str() == "o" && ctrl => {
+                        self.ui.import_request = true;
                     }
 
                     // Delete = Delete selected face
