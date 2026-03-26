@@ -48,6 +48,7 @@ pub struct Renderer {
     pub show_wireframe: bool,
     pub selected_face: Option<u32>,
     pub hovered_face: Option<u32>,
+    last_frame: std::time::Instant,
 }
 
 impl Renderer {
@@ -83,6 +84,7 @@ impl Renderer {
             show_wireframe: false,
             selected_face: None,
             hovered_face: None,
+            last_frame: std::time::Instant::now(),
         }
     }
 
@@ -126,7 +128,9 @@ impl Renderer {
 
     /// Call once per frame to advance camera animation.
     pub fn update(&mut self) {
-        let dt = 1.0 / 60.0; // approximate frame time
+        let now = std::time::Instant::now();
+        let dt = (now - self.last_frame).as_secs_f32().min(0.1); // cap at 100ms
+        self.last_frame = now;
         self.camera.update_animation(dt);
         self.sync_camera();
     }

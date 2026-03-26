@@ -12,7 +12,7 @@ use winit::window::{Window, WindowId};
 use crate::commands::CommandHistory;
 use crate::renderer::Renderer;
 use crate::sketch::Sketch;
-use crate::ui::{Tool, UiState, ViewPreset};
+use crate::ui::{ContextAction, Tool, UiState, ViewPreset};
 
 #[derive(Default)]
 pub(super) struct InputState {
@@ -21,6 +21,7 @@ pub(super) struct InputState {
     pub(super) left_was_drag: bool,
     pub(super) last_mouse: Option<(f64, f64)>,
     pub(super) cursor_pos: (f64, f64),
+    pub(super) cursor_moved: bool,
     pub(super) modifiers: ModifiersState,
 }
 
@@ -50,10 +51,25 @@ impl App {
     }
 
     fn apply_ui_state(&mut self) {
-        // Handle import before borrowing renderer (avoids double-borrow)
+        // Handle import + context menu before borrowing renderer (avoids double-borrow)
         if self.ui.import_request {
             self.ui.import_request = false;
             self.open_file_dialog();
+        }
+
+        if let Some(action) = self.ui.context_menu_action.take() {
+            match action {
+                ContextAction::Delete => {
+                    self.delete_selected_face();
+                    self.ui.toasts.push(crate::ui::Toast::new("Face deleted".into()));
+                }
+                ContextAction::ZoomToFace => {
+                    if let Some(r) = &mut self.renderer {
+                        r.fit_camera();
+                    }
+                }
+                _ => {}
+            }
         }
 
         let Some(renderer) = &mut self.renderer else { return };
@@ -149,12 +165,13 @@ impl App {
             renderer.set_view(yaw, pitch);
         }
 
-        // Hover pre-highlight (only when not dragging and not over egui)
-        if !self.input.middle_pressed && !self.input.left_pressed && !self.egui_ctx.wants_pointer_input() {
+        // Hover pre-highlight (only when cursor moved, not dragging, not over egui)
+        if self.input.cursor_moved && !self.input.middle_pressed && !self.input.left_pressed && !self.egui_ctx.wants_pointer_input() {
             renderer.update_hover(
                 self.input.cursor_pos.0 as f32,
                 self.input.cursor_pos.1 as f32,
             );
+            self.input.cursor_moved = false;
         }
 
         // Mesh stats

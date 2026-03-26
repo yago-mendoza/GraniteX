@@ -55,6 +55,10 @@ pub struct UiState {
     pub selected_face_normal: Option<[f32; 3]>,
     pub selected_face_area: Option<f32>,
     pub toasts: Vec<Toast>,
+    // Right-click context menu
+    pub context_menu_pos: Option<egui::Pos2>,
+    pub context_menu_face: Option<u32>,
+    pub context_menu_action: Option<ContextAction>,
 }
 
 pub struct ChatMessage {
@@ -65,6 +69,15 @@ pub struct ChatMessage {
 pub enum Sender {
     User,
     Agent,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ContextAction {
+    Extrude,
+    Cut,
+    Inset,
+    Delete,
+    ZoomToFace,
 }
 
 pub struct Toast {
@@ -126,6 +139,9 @@ impl UiState {
             selected_face_normal: None,
             selected_face_area: None,
             toasts: Vec::new(),
+            context_menu_pos: None,
+            context_menu_face: None,
+            context_menu_action: None,
         }
     }
 
@@ -137,6 +153,7 @@ impl UiState {
             self.draw_chat_panel(ctx);
         }
         self.draw_toasts(ctx);
+        self.draw_context_menu(ctx);
     }
 
     fn draw_top_toolbar(&mut self, ctx: &egui::Context) {
@@ -433,6 +450,59 @@ impl UiState {
                     }
                 });
             });
+    }
+
+    fn draw_context_menu(&mut self, ctx: &egui::Context) {
+        let Some(pos) = self.context_menu_pos else { return };
+        let Some(face_id) = self.context_menu_face else {
+            self.context_menu_pos = None;
+            return;
+        };
+
+        let area = egui::Area::new(egui::Id::new("face_context_menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .interactable(true);
+
+        let resp = area.show(ctx, |ui| {
+            let frame = egui::Frame::popup(ui.style());
+            frame.show(ui, |ui| {
+                ui.set_min_width(130.0);
+                ui.label(egui::RichText::new(format!("Face {}", face_id)).strong().size(11.0));
+                ui.separator();
+
+                if ui.button(egui::RichText::new("Extrude").size(11.0)).clicked() {
+                    self.active_tool = Tool::Extrude;
+                    self.context_menu_action = Some(ContextAction::Extrude);
+                    self.context_menu_pos = None;
+                }
+                if ui.button(egui::RichText::new("Cut").size(11.0)).clicked() {
+                    self.active_tool = Tool::Cut;
+                    self.context_menu_action = Some(ContextAction::Cut);
+                    self.context_menu_pos = None;
+                }
+                if ui.button(egui::RichText::new("Inset").size(11.0)).clicked() {
+                    self.active_tool = Tool::Inset;
+                    self.context_menu_action = Some(ContextAction::Inset);
+                    self.context_menu_pos = None;
+                }
+                ui.separator();
+                if ui.button(egui::RichText::new("Delete").size(11.0).color(egui::Color32::from_rgb(230, 80, 60))).clicked() {
+                    self.context_menu_action = Some(ContextAction::Delete);
+                    self.context_menu_pos = None;
+                }
+                ui.separator();
+                if ui.button(egui::RichText::new("Zoom to Face").size(11.0)).clicked() {
+                    self.context_menu_action = Some(ContextAction::ZoomToFace);
+                    self.context_menu_pos = None;
+                }
+            });
+        });
+
+        // Close on click outside
+        if ctx.input(|i| i.pointer.any_pressed()) && !resp.response.hovered() {
+            self.context_menu_pos = None;
+        }
     }
 
     fn draw_toasts(&mut self, ctx: &egui::Context) {

@@ -77,6 +77,24 @@
 - Created app/mesh_ops.rs — mesh operations module (delete face)
 - Keyboard shortcuts expanded: Delete key → delete face, "i" → Inset tool
 
+## 2026-03-26 — Session 6: SolidWorks UX Polish + Audit
+
+### Code Health
+- Zero clippy warnings (was 4). Fixed: redundant `use egui`, needless_range_loop, targeted allow for future-ready boundary_edges()
+- Split mesh.rs (576 lines) → mesh/mod.rs (275, core) + mesh/ops.rs (272, operations)
+- Removed duplicate `create_edge_buffer` method in pipeline.rs
+
+### SolidWorks UX Features
+- **Rich status bar**: shows active tool name, mesh stats (F/V/T), selected face info (ID, normal vector, area), 3D cursor world coordinates (XZ ground plane projection). Matches SolidWorks information density.
+- **Right-click context menu**: Right-click on any face → popup with Extrude, Cut, Inset, Delete, Zoom to Face. Auto-selects face under cursor. Only appears outside sketch mode.
+- **Toast notification system**: Bottom-right toasts with fade-out animation. Shows operation feedback ("Extruded 0.50m", "Imported mesh.stl (5420 triangles)", "Face deleted"). Auto-dismiss after 3 seconds.
+- **Face area computation**: Mesh::face_area() sums triangle areas per face_id.
+
+### Performance
+- Hover picking skipped when cursor hasn't moved (was running O(n) raycasting every frame)
+- Real frame timing for camera animation (was hardcoded 1/60s, now uses std::time::Instant)
+- Camera animation dt capped at 100ms to prevent jumps on frame drops
+
 ## 2026-03-26 — Session 6: SolidWorks Polish
 
 ### SolidWorks-Style Improvements

@@ -273,90 +273,96 @@ impl MeshPipeline {
     }
 
     /// Extract boundary edges (edges between different face_ids) and create a LineList buffer.
-    /// Each edge = 2 positions (6 floats). Only boundary edges are included — internal
-    /// triangulation edges within a face are skipped.
+    /// Only draws edges where two different faces meet — internal triangle diagonals are skipped.
+    /// Uses quantized position tuples as keys (collision-free, unlike XOR hashing).
     fn create_edge_buffer(device: &wgpu::Device, mesh: &Mesh) -> (Option<wgpu::Buffer>, u32) {
-        use std::collections::HashSet;
+        use std::collections::{HashMap, HashSet};
 
-        // Build a set of unique edges with their adjacent face_ids.
-        // An edge is a pair of vertex positions (sorted for dedup).
-        // If an edge has two different face_ids on each side, it's a boundary edge.
-        let mut edge_faces: std::collections::HashMap<(u64, u64), HashSet<u32>> = std::collections::HashMap::new();
-
-        let hash_pos = |p: [f32; 3]| -> u64 {
-            let x = (p[0] * 10000.0).round() as i64;
-            let y = (p[1] * 10000.0).round() as i64;
-            let z = (p[2] * 10000.0).round() as i64;
-            (x as u64).wrapping_mul(73856093)
-                ^ (y as u64).wrapping_mul(19349663)
-                ^ (z as u64).wrapping_mul(83492791)
+        // Quantize a position to integer coords for reliable comparison.
+        // 4 decimal places = 0.0001 precision, more than enough for CAD geometry.
+        type PosKey = (i64, i64, i64);
+        let pos_key = |p: [f32; 3]| -> PosKey {
+            ((p[0] * 10000.0).round() as i64,
+             (p[1] * 10000.0).round() as i64,
+             (p[2] * 10000.0).round() as i64)
         };
 
-        for tri_start in (0..mesh.indices.len()).step_by(3) {
-            let i0 = mesh.indices[tri_start] as usize;
-            let i1 = mesh.indices[tri_start + 1] as usize;
-            let i2 = mesh.indices[tri_start + 2] as usize;
+        // Canonical edge key: sorted pair of position keys (order-independent).
+        type EdgeKey = (PosKey, PosKey);
+        let edge_key = |a: [f32; 3], b: [f32; 3]| -> EdgeKey {
+            let ka = pos_key(a);
+            let kb = pos_key(b);
+            if ka <= kb { (ka, kb) } else { (kb, ka) }
+        };
 
+        // Pass 1: Collect face_ids per unique edge.
+        let mut edge_faces: HashMap<EdgeKey, (HashSet<u32>, [f32; 3], [f32; 3])> = HashMap::new();
+
+        for tri in mesh.indices.chunks_exact(3) {
+            let i0 = tri[0] as usize;
+            let i1 = tri[1] as usize;
+            let i2 = tri[2] as usize;
             let face_id = mesh.vertices[i0].face_id;
 
-            let edges = [(i0, i1), (i1, i2), (i2, i0)];
-            for (a, b) in edges {
-                let ha = hash_pos(mesh.vertices[a].position);
-                let hb = hash_pos(mesh.vertices[b].position);
-                let key = if ha <= hb { (ha, hb) } else { (hb, ha) };
-                edge_faces.entry(key).or_default().insert(face_id);
+            for &(a, b) in &[(i0, i1), (i1, i2), (i2, i0)] {
+                let pa = mesh.vertices[a].position;
+                let pb = mesh.vertices[b].position;
+                let key = edge_key(pa, pb);
+
+                edge_faces.entry(key)
+                    .and_modify(|(faces, _, _)| { faces.insert(face_id); })
+                    .or_insert_with(|| {
+                        let mut s = HashSet::new();
+                        s.insert(face_id);
+                        (s, pa, pb)
+                    });
             }
         }
 
-        // Boundary edges: edges with more than one face_id
-        let mut edge_positions: Vec<f32> = Vec::new();
-        for tri_start in (0..mesh.indices.len()).step_by(3) {
-            let i0 = mesh.indices[tri_start] as usize;
-            let i1 = mesh.indices[tri_start + 1] as usize;
-            let i2 = mesh.indices[tri_start + 2] as usize;
+        // Build face normal cache for angle check.
+        let mut face_normals: HashMap<u32, glam::Vec3> = HashMap::new();
+        for v in &mesh.vertices {
+            face_normals.entry(v.face_id).or_insert_with(|| glam::Vec3::from(v.normal));
+        }
 
-            let edges = [(i0, i1), (i1, i2), (i2, i0)];
-            for (a, b) in edges {
-                let ha = hash_pos(mesh.vertices[a].position);
-                let hb = hash_pos(mesh.vertices[b].position);
-                let key = if ha <= hb { (ha, hb) } else { (hb, ha) };
+        // Pass 2: Emit edges where adjacent faces meet at an angle.
+        // Skip: internal edges (same face_id) and edges between coplanar faces
+        // (same normal direction — e.g., inset connecting quads on a flat plane).
+        // SolidWorks only draws edges where the surface angle changes.
+        let mut positions: Vec<f32> = Vec::new();
+        for (_, (faces, pa, pb)) in &edge_faces {
+            if faces.len() <= 1 {
+                continue; // internal edge or mesh boundary
+            }
 
-                if let Some(faces) = edge_faces.get(&key) {
-                    if faces.len() > 1 {
-                        // Boundary edge — add both endpoints
-                        let pa = mesh.vertices[a].position;
-                        let pb = mesh.vertices[b].position;
-                        edge_positions.extend_from_slice(&pa);
-                        edge_positions.extend_from_slice(&pb);
-                        // Remove to avoid duplicates
-                        // (we'll see this edge from the other triangle too)
+            // Check if any pair of faces at this edge has a meaningful angle between them.
+            let face_ids: Vec<u32> = faces.iter().copied().collect();
+            let mut has_angle = false;
+            for i in 0..face_ids.len() {
+                for j in (i + 1)..face_ids.len() {
+                    if let (Some(na), Some(nb)) = (face_normals.get(&face_ids[i]), face_normals.get(&face_ids[j])) {
+                        // Draw if normals differ by more than ~5 degrees
+                        if na.dot(*nb).abs() < 0.996 {
+                            has_angle = true;
+                        }
                     }
                 }
             }
-        }
 
-        // Deduplicate edge lines (each boundary edge appears twice, once from each triangle)
-        // Simple approach: sort pairs and dedup
-        let mut unique_edges: Vec<[f32; 6]> = Vec::new();
-        for chunk in edge_positions.chunks_exact(6) {
-            let edge: [f32; 6] = [chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5]];
-            // Normalize order for dedup
-            let rev: [f32; 6] = [chunk[3], chunk[4], chunk[5], chunk[0], chunk[1], chunk[2]];
-            if !unique_edges.contains(&edge) && !unique_edges.contains(&rev) {
-                unique_edges.push(edge);
+            if has_angle {
+                positions.extend_from_slice(pa);
+                positions.extend_from_slice(pb);
             }
         }
 
-        if unique_edges.is_empty() {
+        if positions.is_empty() {
             return (None, 0);
         }
 
-        let flat: Vec<f32> = unique_edges.iter().flat_map(|e| e.iter().copied()).collect();
-        let num_vertices = (flat.len() / 3) as u32; // each vertex = 3 floats
-
+        let num_vertices = (positions.len() / 3) as u32;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Edge Vertices"),
-            contents: bytemuck::cast_slice(&flat),
+            contents: bytemuck::cast_slice(&positions),
             usage: wgpu::BufferUsages::VERTEX,
         });
 

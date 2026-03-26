@@ -39,11 +39,26 @@ impl App {
                     }
                     MouseButton::Right => {
                         if !pressed {
-                            if let Some(sketch) = &mut self.sketch {
-                                if sketch.pending_start.is_some() {
-                                    sketch.cancel_pending();
-                                } else {
-                                    self.sketch = None;
+                            if self.is_drawing_tool() {
+                                // In drawing mode: right-click cancels
+                                if let Some(sketch) = &mut self.sketch {
+                                    if sketch.pending_start.is_some() {
+                                        sketch.cancel_pending();
+                                    } else {
+                                        self.sketch = None;
+                                    }
+                                }
+                            } else {
+                                // Not drawing: show context menu on face
+                                let sx = self.input.cursor_pos.0 as f32;
+                                let sy = self.input.cursor_pos.1 as f32;
+                                if let Some(r) = &mut self.renderer {
+                                    // Select the face under cursor first
+                                    r.try_select_face(sx, sy);
+                                    if let Some(fid) = r.selected_face {
+                                        self.ui.context_menu_pos = Some(egui::pos2(sx, sy));
+                                        self.ui.context_menu_face = Some(fid);
+                                    }
                                 }
                             }
                         }
@@ -55,6 +70,7 @@ impl App {
             WindowEvent::CursorMoved { position, .. } => {
                 let current = (position.x, position.y);
                 self.input.cursor_pos = current;
+                self.input.cursor_moved = true;
 
                 if !self.egui_ctx.wants_pointer_input() {
                     if let Some(last) = self.input.last_mouse {

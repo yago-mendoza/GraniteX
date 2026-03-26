@@ -224,10 +224,8 @@ impl Mesh {
             return None;
         }
 
-        if positions.len() <= 4 {
-            return Some(positions);
-        }
-
+        // Always sort by angle around center — even for 3-4 vertex faces.
+        // Without this, vertex buffer order can cause crossed quads on extrude.
         let center: Vec3 = positions.iter().copied().sum::<Vec3>() / positions.len() as f32;
 
         let u_axis = if normal.dot(Vec3::Y).abs() < 0.99 {

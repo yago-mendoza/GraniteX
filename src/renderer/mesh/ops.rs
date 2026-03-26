@@ -29,6 +29,22 @@ impl Mesh {
             .map(|p| (Vec3::from(*p) + offset).into())
             .collect();
 
+        // For cylindrical extrusions (many sides), use a single face_id with smooth normals.
+        // For simple extrusions (4 sides = box), use individual face_ids with coplanar merging.
+        let is_cylindrical = n > 6;
+        let cylinder_face_id = if is_cylindrical {
+            let id = self.next_face_id;
+            self.next_face_id += 1;
+            Some(id)
+        } else {
+            None
+        };
+
+        // Compute center of the face (for radial normals on cylinders)
+        let center = old_positions.iter()
+            .map(|p| Vec3::from(*p))
+            .sum::<Vec3>() / n as f32;
+
         for i in 0..n {
             let j = (i + 1) % n;
 
@@ -37,21 +53,42 @@ impl Mesh {
             let top0 = new_positions[i];
             let top1 = new_positions[j];
 
-            let edge_h = Vec3::from(top0) - Vec3::from(bottom0);
-            let edge_w = Vec3::from(bottom1) - Vec3::from(bottom0);
-            let side_normal = edge_w.cross(edge_h).normalize();
-
             let side_positions = [bottom0, bottom1, top1, top0];
 
-            let side_face_id = self
-                .find_coplanar_adjacent_face(side_normal, &side_positions)
-                .unwrap_or_else(|| {
-                    let id = self.next_face_id;
-                    self.next_face_id += 1;
-                    id
-                });
+            if let Some(cyl_id) = cylinder_face_id {
+                // Smooth normals: radial direction from the extrude axis
+                let axis = normal;
+                let mid0 = Vec3::from(bottom0);
+                let mid1 = Vec3::from(bottom1);
+                // Project position onto the axis-perpendicular plane for radial normal
+                let radial0 = (mid0 - center - axis * (mid0 - center).dot(axis)).normalize();
+                let radial1 = (mid1 - center - axis * (mid1 - center).dot(axis)).normalize();
 
-            self.push_quad(side_positions, side_normal, side_face_id);
+                let base = self.vertices.len() as u32;
+                let v = |pos: [f32; 3], n: Vec3| Vertex {
+                    position: pos, normal: n.into(), face_id: cyl_id, _pad: 0,
+                };
+                self.vertices.push(v(bottom0, radial0));
+                self.vertices.push(v(bottom1, radial1));
+                self.vertices.push(v(top1, radial1));
+                self.vertices.push(v(top0, radial0));
+                self.indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
+            } else {
+                // Flat normals with coplanar face merging
+                let edge_h = Vec3::from(top0) - Vec3::from(bottom0);
+                let edge_w = Vec3::from(bottom1) - Vec3::from(bottom0);
+                let side_normal = edge_w.cross(edge_h).normalize();
+
+                let side_face_id = self
+                    .find_coplanar_adjacent_face(side_normal, &side_positions)
+                    .unwrap_or_else(|| {
+                        let id = self.next_face_id;
+                        self.next_face_id += 1;
+                        id
+                    });
+
+                self.push_quad(side_positions, side_normal, side_face_id);
+            }
         }
 
         Some(cap_face_id)
@@ -82,6 +119,19 @@ impl Mesh {
             .map(|p| (Vec3::from(*p) + offset).into())
             .collect();
 
+        let is_cylindrical = n > 6;
+        let cylinder_face_id = if is_cylindrical {
+            let id = self.next_face_id;
+            self.next_face_id += 1;
+            Some(id)
+        } else {
+            None
+        };
+
+        let center = old_positions.iter()
+            .map(|p| Vec3::from(*p))
+            .sum::<Vec3>() / n as f32;
+
         for i in 0..n {
             let j = (i + 1) % n;
 
@@ -90,14 +140,34 @@ impl Mesh {
             let bot0 = new_positions[i];
             let bot1 = new_positions[j];
 
-            let edge_h = Vec3::from(bot0) - Vec3::from(top0);
-            let edge_w = Vec3::from(top1) - Vec3::from(top0);
-            let side_normal = edge_h.cross(edge_w).normalize();
+            if let Some(cyl_id) = cylinder_face_id {
+                let mid0 = Vec3::from(top0);
+                let mid1 = Vec3::from(top1);
+                let radial0 = (mid0 - center - normal * (mid0 - center).dot(normal)).normalize();
+                let radial1 = (mid1 - center - normal * (mid1 - center).dot(normal)).normalize();
+                // Inward-facing for cut
+                let n0 = -radial0;
+                let n1 = -radial1;
 
-            let wall_face_id = self.next_face_id;
-            self.next_face_id += 1;
+                let base = self.vertices.len() as u32;
+                let v = |pos: [f32; 3], norm: Vec3| Vertex {
+                    position: pos, normal: norm.into(), face_id: cyl_id, _pad: 0,
+                };
+                self.vertices.push(v(top0, n0));
+                self.vertices.push(v(top1, n1));
+                self.vertices.push(v(bot1, n1));
+                self.vertices.push(v(bot0, n0));
+                self.indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
+            } else {
+                let edge_h = Vec3::from(bot0) - Vec3::from(top0);
+                let edge_w = Vec3::from(top1) - Vec3::from(top0);
+                let side_normal = edge_h.cross(edge_w).normalize();
 
-            self.push_quad([top0, top1, bot1, bot0], side_normal, wall_face_id);
+                let wall_face_id = self.next_face_id;
+                self.next_face_id += 1;
+
+                self.push_quad([top0, top1, bot1, bot0], side_normal, wall_face_id);
+            }
         }
 
         Some(floor_face_id)
@@ -191,13 +261,22 @@ impl Mesh {
 
     /// Add a polygon face, slightly offset along normal to prevent z-fighting.
     pub fn add_polygon_face(&mut self, points: &[Vec3], normal: Vec3) -> u32 {
+        self.add_polygon_face_inner(points, normal, normal * 0.0003)
+    }
+
+    /// Add a polygon face flush with the surface (no z-offset).
+    /// Use when the parent face has been deleted so there's nothing to z-fight with.
+    pub fn add_polygon_face_flush(&mut self, points: &[Vec3], normal: Vec3) -> u32 {
+        self.add_polygon_face_inner(points, normal, Vec3::ZERO)
+    }
+
+    fn add_polygon_face_inner(&mut self, points: &[Vec3], normal: Vec3, offset: Vec3) -> u32 {
         let face_id = self.next_face_id;
         self.next_face_id += 1;
 
         if points.len() < 3 { return face_id; }
 
         let base_idx = self.vertices.len() as u32;
-        let offset = normal * 0.002;
 
         for p in points {
             self.vertices.push(Vertex {
@@ -219,32 +298,56 @@ impl Mesh {
 
     /// Compute boundary edges for line rendering.
     #[allow(dead_code)]
+    /// Extract boundary edges — edges where adjacent triangles have DIFFERENT face_ids.
+    /// Uses position-based hashing (not vertex indices) because faces don't share vertices.
     pub fn boundary_edges(&self) -> Vec<[f32; 3]> {
         use std::collections::HashMap;
 
-        let mut edge_faces: HashMap<(u32, u32), (u32, Option<u32>)> = HashMap::new();
+        // Hash a position to a canonical integer key for dedup.
+        let hash_pos = |p: [f32; 3]| -> i64 {
+            let x = (p[0] * 10000.0).round() as i64;
+            let y = (p[1] * 10000.0).round() as i64;
+            let z = (p[2] * 10000.0).round() as i64;
+            x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663) ^ z.wrapping_mul(83492791)
+        };
+
+        // Map: (pos_hash_a, pos_hash_b) → set of face_ids touching this edge.
+        // Also store the actual positions for rendering.
+        let mut edge_data: HashMap<(i64, i64), (Vec<u32>, [f32; 3], [f32; 3])> = HashMap::new();
 
         for chunk in self.indices.chunks(3) {
             if chunk.len() < 3 { continue; }
             let face_id = self.vertices[chunk[0] as usize].face_id;
 
-            for &(a, b) in &[(chunk[0], chunk[1]), (chunk[1], chunk[2]), (chunk[2], chunk[0])] {
-                let key = if a < b { (a, b) } else { (b, a) };
-                edge_faces.entry(key)
-                    .and_modify(|(_, second)| { *second = Some(face_id); })
-                    .or_insert((face_id, None));
+            let idx = [chunk[0] as usize, chunk[1] as usize, chunk[2] as usize];
+            for &(ai, bi) in &[(idx[0], idx[1]), (idx[1], idx[2]), (idx[2], idx[0])] {
+                let pa = self.vertices[ai].position;
+                let pb = self.vertices[bi].position;
+                let ha = hash_pos(pa);
+                let hb = hash_pos(pb);
+                let key = if ha <= hb { (ha, hb) } else { (hb, ha) };
+
+                edge_data.entry(key)
+                    .and_modify(|(faces, _, _)| {
+                        if !faces.contains(&face_id) {
+                            faces.push(face_id);
+                        }
+                    })
+                    .or_insert((vec![face_id], pa, pb));
             }
         }
 
         let mut lines = Vec::new();
-        for ((a, b), (face1, face2)) in &edge_faces {
-            let is_boundary = match face2 {
-                None => true,
-                Some(f2) => *f2 != *face1,
+        for (_, (faces, pa, pb)) in &edge_data {
+            // Boundary = edge touching 2+ different faces, or edge on mesh boundary (1 face)
+            let is_boundary = faces.len() != 1 || {
+                // Check if this is a mesh boundary (silhouette) edge
+                // For now, only draw edges between different faces
+                false
             };
-            if is_boundary {
-                lines.push(self.vertices[*a as usize].position);
-                lines.push(self.vertices[*b as usize].position);
+            if is_boundary && faces.len() > 1 {
+                lines.push(*pa);
+                lines.push(*pb);
             }
         }
         lines

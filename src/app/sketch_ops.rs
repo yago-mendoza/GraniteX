@@ -104,7 +104,7 @@ impl App {
         let last = &entities[entities.len() - 1];
         match last {
             crate::sketch::SketchEntity::Circle { center, radius } => {
-                let segments = 48;
+                let segments = 64;
                 for j in 0..segments {
                     let angle = std::f32::consts::TAU * j as f32 / segments as f32;
                     contour_points.push(crate::sketch::Point2D::new(
@@ -152,8 +152,12 @@ impl App {
             .map(|p| sketch.to_3d(*p))
             .collect();
         let normal = sketch.plane.normal;
+        let parent_face_id = sketch.face_id;
 
-        renderer.mesh.add_polygon_face(&points_3d, normal);
+        // SolidWorks behavior: delete the parent face and create the contour flush.
+        // The area outside the contour is lost, but extrude will create proper geometry.
+        renderer.mesh.delete_face(parent_face_id);
+        renderer.mesh.add_polygon_face_flush(&points_3d, normal);
         renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
     }
 }
