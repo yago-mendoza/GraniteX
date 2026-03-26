@@ -53,7 +53,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Selection highlight — blue tint
     if scene.selected_face >= 0 && in.face_id == u32(scene.selected_face) {
         let highlight = vec3<f32>(0.3, 0.5, 0.9);
-        color = mix(color, highlight, 0.45);
+        color = mix(color, highlight, 0.4);
     }
 
     return vec4<f32>(color, 1.0);

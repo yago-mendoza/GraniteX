@@ -27,11 +27,8 @@ struct App {
     egui_state: Option<egui_winit::State>,
     ui: UiState,
     input: InputState,
-    /// Per-face sketches. Key = face_id. Geometry persists.
-    sketches: std::collections::HashMap<u32, Sketch>,
-    /// Which face we're currently drawing on (if any).
-    active_sketch_face: Option<u32>,
-    /// Undo/redo history for mesh operations.
+    /// Active sketch (only one at a time — on the face being drawn on).
+    sketch: Option<Sketch>,
     history: CommandHistory,
 }
 
@@ -44,70 +41,48 @@ impl App {
             egui_state: None,
             ui: UiState::new(),
             input: InputState::default(),
-            sketches: std::collections::HashMap::new(),
-            active_sketch_face: None,
+            sketch: None,
             history: CommandHistory::new(),
         }
     }
 
-    /// Returns true if a drawing tool is active.
     fn is_drawing_tool(&self) -> bool {
         matches!(self.ui.active_tool, Tool::Line | Tool::Rect | Tool::Circle)
-    }
-
-    /// Get or create a sketch for the given face.
-    fn get_or_create_sketch(&mut self, face_id: u32) -> bool {
-        let Some(renderer) = &self.renderer else { return false };
-        if self.sketches.contains_key(&face_id) {
-            self.active_sketch_face = Some(face_id);
-            return true;
-        }
-        let Some(normal) = renderer.mesh.face_normal(face_id) else { return false };
-        let Some(center) = renderer.face_center(face_id) else { return false };
-
-        let plane = SketchPlane::from_face(normal, center);
-        self.sketches.insert(face_id, Sketch::new(plane, face_id));
-        self.active_sketch_face = Some(face_id);
-        true
     }
 
     fn handle_draw_click(&mut self, screen_x: f32, screen_y: f32) {
         let Some(renderer) = &self.renderer else { return };
 
-        // Always pick the face under cursor — auto-detect which face to draw on
-        let view_proj = renderer.view_proj();
+        // Pick the face under cursor
         let result = crate::renderer::picking::pick_face(
             screen_x, screen_y,
             renderer.gpu_width(), renderer.gpu_height(),
-            view_proj,
+            renderer.view_proj(),
             &renderer.mesh,
         );
         let Some(pick) = result else { return };
         let face_id = pick.face_id;
 
-        // If clicking a different face, cancel pending on old face and switch
-        if self.active_sketch_face != Some(face_id) {
-            if let Some(old_face) = self.active_sketch_face {
-                if let Some(old_sketch) = self.sketches.get_mut(&old_face) {
-                    old_sketch.cancel_pending();
-                }
-            }
-            self.get_or_create_sketch(face_id);
+        // If no sketch or sketch is on a different face, create new one
+        let need_new = match &self.sketch {
+            None => true,
+            Some(s) => s.face_id != face_id,
+        };
+        if need_new {
+            let Some(normal) = renderer.mesh.face_normal(face_id) else { return };
+            let Some(center) = renderer.face_center(face_id) else { return };
+            let plane = SketchPlane::from_face(normal, center);
+            self.sketch = Some(Sketch::new(plane, face_id));
         }
-        // Ensure sketch exists for this face
-        if !self.sketches.contains_key(&face_id) {
-            self.get_or_create_sketch(face_id);
-        }
-        self.active_sketch_face = Some(face_id);
 
         let Some(renderer) = &self.renderer else { return };
-        let Some(sketch) = self.sketches.get_mut(&face_id) else { return };
+        let Some(sketch) = &mut self.sketch else { return };
 
-        // Cast ray to sketch plane
+        // Project click onto sketch plane
         let (ray_o, ray_d) = renderer.screen_to_ray(screen_x, screen_y);
         let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) else { return };
         let mut pos = sketch.world_to_2d(hit);
-        sketch.cursor_2d = Some(pos); // ensure cursor is set on first click
+        sketch.cursor_2d = Some(pos);
 
         // Snap to existing endpoints
         if let Some(snapped) = sketch.snap_to_endpoint(pos, 0.05) {
@@ -120,8 +95,7 @@ impl App {
             Tool::Line => {
                 if let Some(start) = sketch.pending_start.take() {
                     sketch.add_line(start, pos);
-
-                    // Check if contour is closed (pos snapped back to chain_start)
+                    // Check if contour closed
                     if let Some(chain_start) = sketch.chain_start {
                         if pos.distance_to(chain_start) < 0.01 {
                             contour_closed = true;
@@ -141,7 +115,7 @@ impl App {
             Tool::Rect => {
                 if let Some(start) = sketch.pending_start.take() {
                     sketch.add_rect(start, pos);
-                    contour_closed = true; // rect is always a closed contour
+                    contour_closed = true;
                 } else {
                     sketch.pending_start = Some(pos);
                 }
@@ -149,7 +123,7 @@ impl App {
             Tool::Circle => {
                 if let Some(center) = sketch.pending_start.take() {
                     sketch.add_circle(center, center.distance_to(pos));
-                    contour_closed = true; // circle is always closed
+                    contour_closed = true;
                 } else {
                     sketch.pending_start = Some(pos);
                 }
@@ -157,17 +131,15 @@ impl App {
             _ => {}
         }
 
-        // Closed contour → convert to mesh face, auto-switch to Select
         if contour_closed {
-            self.convert_contour_to_face(face_id);
+            self.convert_contour_to_face();
+            self.sketch = None; // clear sketch after conversion
             self.ui.active_tool = Tool::Select;
-            self.active_sketch_face = None;
         }
     }
 
-    /// Convert the last closed contour on a face into actual mesh geometry.
-    fn convert_contour_to_face(&mut self, face_id: u32) {
-        let Some(sketch) = self.sketches.get(&face_id) else { return };
+    fn convert_contour_to_face(&mut self) {
+        let Some(sketch) = &self.sketch else { return };
         let Some(renderer) = &mut self.renderer else { return };
 
         self.history.save_state(&renderer.mesh);
@@ -177,11 +149,9 @@ impl App {
 
         let mut contour_points: Vec<crate::sketch::Point2D> = Vec::new();
 
-        // Check last entity type for simple cases
         let last = &entities[entities.len() - 1];
         match last {
             crate::sketch::SketchEntity::Circle { center, radius } => {
-                // Circle → polygon with 24 segments
                 let segments = 48;
                 for j in 0..segments {
                     let angle = std::f32::consts::TAU * j as f32 / segments as f32;
@@ -192,19 +162,13 @@ impl App {
                 }
             }
             crate::sketch::SketchEntity::Line { .. } => {
-                // Walk backward through lines to build a connected chain
-                // Lines are added in order: line1.end = line2.start (chaining)
-                // So walking forward through connected lines gives the contour.
-
-                // Find where the last contour starts by walking backwards
+                // Walk backward to find chain start
                 let mut start_idx = entities.len() - 1;
                 while start_idx > 0 {
-                    let prev = &entities[start_idx - 1];
-                    let curr = &entities[start_idx];
                     if let (
                         crate::sketch::SketchEntity::Line { end: prev_end, .. },
                         crate::sketch::SketchEntity::Line { start: curr_start, .. }
-                    ) = (prev, curr) {
+                    ) = (&entities[start_idx - 1], &entities[start_idx]) {
                         if prev_end.distance_to(*curr_start) < 0.02 {
                             start_idx -= 1;
                         } else {
@@ -215,7 +179,7 @@ impl App {
                     }
                 }
 
-                // Now walk forward from start_idx, collecting unique points
+                // Walk forward collecting points
                 for idx in start_idx..entities.len() {
                     if let crate::sketch::SketchEntity::Line { start, end } = &entities[idx] {
                         if contour_points.is_empty() || start.distance_to(*contour_points.last().unwrap()) > 0.01 {
@@ -233,17 +197,13 @@ impl App {
         if contour_points.first().unwrap().distance_to(*contour_points.last().unwrap()) < 0.02 {
             contour_points.pop();
         }
-
         if contour_points.len() < 3 { return; }
 
-        // Convert 2D contour points to 3D
         let points_3d: Vec<glam::Vec3> = contour_points.iter()
             .map(|p| sketch.to_3d(*p))
             .collect();
-
         let normal = sketch.plane.normal;
 
-        // Add as a new face to the mesh using fan triangulation
         renderer.mesh.add_polygon_face(&points_3d, normal);
         renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
     }
@@ -265,12 +225,11 @@ impl App {
                             if !self.input.left_was_drag {
                                 let sx = self.input.cursor_pos.0 as f32;
                                 let sy = self.input.cursor_pos.1 as f32;
-
                                 if self.is_drawing_tool() {
                                     self.handle_draw_click(sx, sy);
                                 } else {
-                                    if let Some(renderer) = &mut self.renderer {
-                                        renderer.try_select_face(sx, sy);
+                                    if let Some(r) = &mut self.renderer {
+                                        r.try_select_face(sx, sy);
                                     }
                                 }
                             }
@@ -284,15 +243,11 @@ impl App {
                     }
                     MouseButton::Right => {
                         if !pressed {
-                            // Right-click: cancel pending draw operation
-                            if let Some(face_id) = self.active_sketch_face {
-                                if let Some(sketch) = self.sketches.get_mut(&face_id) {
-                                    if sketch.pending_start.is_some() {
-                                        sketch.cancel_pending();
-                                    } else {
-                                        // No pending → deactivate this sketch face
-                                        self.active_sketch_face = None;
-                                    }
+                            if let Some(sketch) = &mut self.sketch {
+                                if sketch.pending_start.is_some() {
+                                    sketch.cancel_pending();
+                                } else {
+                                    self.sketch = None;
                                 }
                             }
                         }
@@ -311,12 +266,12 @@ impl App {
                         let dy = (current.1 - last.1) as f32;
                         if dx.abs() > 1.0 || dy.abs() > 1.0 {
                             if self.input.left_pressed { self.input.left_was_drag = true; }
-                            if let Some(renderer) = &mut self.renderer {
+                            if let Some(r) = &mut self.renderer {
                                 if self.input.middle_pressed {
                                     if self.input.modifiers.control_key() {
-                                        renderer.pan(dx, dy);
+                                        r.pan(dx, dy);
                                     } else {
-                                        renderer.orbit(dx, dy);
+                                        r.orbit(dx, dy);
                                     }
                                 }
                             }
@@ -331,7 +286,7 @@ impl App {
                     MouseScrollDelta::LineDelta(_, y) => *y,
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.01,
                 };
-                if let Some(renderer) = &mut self.renderer { renderer.zoom(scroll); }
+                if let Some(r) = &mut self.renderer { r.zoom(scroll); }
             }
 
             _ => {}
@@ -344,41 +299,33 @@ impl App {
                 use winit::keyboard::{Key, NamedKey};
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Escape) => {
-                        if let Some(face_id) = self.active_sketch_face {
-                            if let Some(sketch) = self.sketches.get_mut(&face_id) {
-                                if sketch.pending_start.is_some() {
-                                    sketch.cancel_pending();
-                                } else {
-                                    self.active_sketch_face = None;
-                                    self.ui.active_tool = Tool::Select;
-                                }
+                        if let Some(sketch) = &mut self.sketch {
+                            if sketch.pending_start.is_some() {
+                                sketch.cancel_pending();
+                            } else {
+                                self.sketch = None;
                             }
-                        } else {
-                            self.ui.active_tool = Tool::Select;
                         }
+                        self.ui.active_tool = Tool::Select;
                     }
                     Key::Character(c) if c.as_str() == "z" && self.input.modifiers.control_key() => {
-                        // Ctrl+Z: undo sketch entity first, then mesh operations
-                        if let Some(face_id) = self.active_sketch_face {
-                            if let Some(sketch) = self.sketches.get_mut(&face_id) {
-                                if !sketch.entities.is_empty() {
-                                    sketch.undo_last();
-                                    return;
-                                }
+                        // Undo sketch entity first, then mesh
+                        if let Some(sketch) = &mut self.sketch {
+                            if !sketch.entities.is_empty() {
+                                sketch.undo_last();
+                                return;
                             }
                         }
-                        // Undo mesh operation
-                        if let Some(renderer) = &mut self.renderer {
-                            if self.history.undo(&mut renderer.mesh) {
-                                renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                        if let Some(r) = &mut self.renderer {
+                            if self.history.undo(&mut r.mesh) {
+                                r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);
                             }
                         }
                     }
                     Key::Character(c) if c.as_str() == "y" && self.input.modifiers.control_key() => {
-                        // Ctrl+Y: redo
-                        if let Some(renderer) = &mut self.renderer {
-                            if self.history.redo(&mut renderer.mesh) {
-                                renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                        if let Some(r) = &mut self.renderer {
+                            if self.history.redo(&mut r.mesh) {
+                                r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);
                             }
                         }
                     }
@@ -392,7 +339,7 @@ impl App {
         let Some(renderer) = &mut self.renderer else { return };
         renderer.show_grid = self.ui.show_grid;
 
-        // Extrude (with undo)
+        // Extrude
         if let Some(distance) = self.ui.extrude_request.take() {
             self.history.save_state(&renderer.mesh);
             renderer.extrude_selected(distance);
@@ -406,38 +353,34 @@ impl App {
             renderer.clear_preview();
         }
 
-        // Update cursor on active sketch plane
-        if let Some(face_id) = self.active_sketch_face {
-            if let Some(sketch) = self.sketches.get_mut(&face_id) {
-                let (ray_o, ray_d) = renderer.screen_to_ray(
-                    self.input.cursor_pos.0 as f32,
-                    self.input.cursor_pos.1 as f32,
-                );
-                if let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) {
-                    let mut pos = sketch.world_to_2d(hit);
-                    if let Some(snapped) = sketch.snap_to_endpoint(pos, 0.05) {
-                        pos = snapped;
-                    }
-                    sketch.cursor_2d = Some(pos);
+        // Update sketch cursor
+        if let Some(sketch) = &mut self.sketch {
+            let (ray_o, ray_d) = renderer.screen_to_ray(
+                self.input.cursor_pos.0 as f32,
+                self.input.cursor_pos.1 as f32,
+            );
+            if let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) {
+                let mut pos = sketch.world_to_2d(hit);
+                if let Some(snapped) = sketch.snap_to_endpoint(pos, 0.05) {
+                    pos = snapped;
                 }
+                sketch.cursor_2d = Some(pos);
             }
+            self.ui.sketch_entity_count = sketch.entities.len();
+        } else {
+            self.ui.sketch_entity_count = 0;
         }
 
-        // Count total sketch entities
-        let total: usize = self.sketches.values().map(|s| s.entities.len()).sum();
-        self.ui.sketch_entity_count = total;
-
-        // Update sketch rendering — render ALL sketches
+        // Render sketch
         renderer.clear_sketch();
-        let tool = match self.ui.active_tool {
-            Tool::Line => crate::ui::Tool::Line,
-            Tool::Rect => crate::ui::Tool::Rect,
-            Tool::Circle => crate::ui::Tool::Circle,
-            _ => crate::ui::Tool::Select,
-        };
-        for (face_id, sketch) in &self.sketches {
-            let is_active = self.active_sketch_face == Some(*face_id);
-            renderer.update_sketch_multi(sketch, tool, is_active);
+        if let Some(sketch) = &self.sketch {
+            let tool = match self.ui.active_tool {
+                Tool::Line => crate::ui::Tool::Line,
+                Tool::Rect => crate::ui::Tool::Rect,
+                Tool::Circle => crate::ui::Tool::Circle,
+                _ => crate::ui::Tool::Select,
+            };
+            renderer.update_sketch_multi(sketch, tool, true);
         }
 
         // View presets
