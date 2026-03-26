@@ -1,0 +1,33 @@
+[package]
+name = "granitex"
+version = "0.1.0"
+edition = "2021"
+description = "A 3D CAD application built in Rust"
+repository = "https://github.com/yago-mendoza/GraniteX"
+
+[dependencies]
+# GPU rendering
+wgpu = "23"
+# Windowing & input
+winit = "0.30"
+# UI
+egui = "0.30"
+egui-wgpu = "0.30"
+egui-winit = "0.30"
+# Math
+glam = { version = "0.29", features = ["bytemuck"] }
+# Serialization (for vertex data, project files)
+bytemuck = { version = "1", features = ["derive"] }
+# Logging
+env_logger = "0.11"
+log = "0.4"
+# Error handling
+anyhow = "1"
+# Async (wgpu needs it for adapter/device request)
+pollster = "0.4"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
