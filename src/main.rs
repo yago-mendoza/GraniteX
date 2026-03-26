@@ -1,7 +1,6 @@
-#![allow(dead_code)]
-
 mod app;
 mod commands;
+mod import;
 mod renderer;
 mod sketch;
 mod ui;

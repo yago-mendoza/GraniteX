@@ -5,6 +5,7 @@ pub enum Tool {
     Select,
     Extrude,
     Cut,
+    Inset,
     Fillet,
     Line,
     Rect,
@@ -31,11 +32,17 @@ pub enum ViewPreset {
 
 pub struct UiState {
     pub show_grid: bool,
+    pub show_wireframe: bool,
     pub show_chat: bool,
     pub active_tool: Tool,
     pub view_request: Option<ViewPreset>,
     pub extrude_request: Option<f32>,
     pub extrude_distance: f32,
+    pub cut_request: Option<f32>,
+    pub cut_depth: f32,
+    pub inset_request: Option<f32>,
+    pub inset_amount: f32,
+    pub import_request: bool,
     pub chat_input: String,
     pub chat_history: Vec<ChatMessage>,
     pub selected_feature: Option<String>,
@@ -43,6 +50,7 @@ pub struct UiState {
     pub mesh_verts: usize,
     pub mesh_tris: usize,
     pub sketch_entity_count: usize,
+    pub wireframe_supported: bool,
 }
 
 pub struct ChatMessage {
@@ -59,11 +67,17 @@ impl UiState {
     pub fn new() -> Self {
         Self {
             show_grid: true,
+            show_wireframe: false,
             show_chat: true,
             active_tool: Tool::Select,
             view_request: None,
             extrude_request: None,
             extrude_distance: 0.5,
+            cut_request: None,
+            cut_depth: 0.3,
+            inset_request: None,
+            inset_amount: 0.1,
+            import_request: false,
             chat_input: String::new(),
             chat_history: vec![
                 ChatMessage {
@@ -76,6 +90,7 @@ impl UiState {
             mesh_verts: 24,
             mesh_tris: 12,
             sketch_entity_count: 0,
+            wireframe_supported: false,
         }
     }
 
@@ -98,11 +113,18 @@ impl UiState {
                     ui.label(egui::RichText::new("GraniteX").strong().size(13.0));
                     ui.separator();
 
+                    if ui.add(egui::Button::new(egui::RichText::new("Import").size(11.0))).clicked() {
+                        self.import_request = true;
+                    }
+
+                    ui.separator();
+
                     // Operations
                     let ops = [
                         (Tool::Select,  "Select"),
                         (Tool::Extrude, "Extrude"),
                         (Tool::Cut,     "Cut"),
+                        (Tool::Inset,   "Inset"),
                         (Tool::Fillet,  "Fillet"),
                     ];
                     for (tool, label) in &ops {
@@ -136,8 +158,11 @@ impl UiState {
                     ui.label(egui::RichText::new("View:").weak().size(10.0));
                     for (preset, label) in [
                         (ViewPreset::Front, "F"),
+                        (ViewPreset::Back, "Bk"),
                         (ViewPreset::Top, "T"),
+                        (ViewPreset::Bottom, "Bt"),
                         (ViewPreset::Right, "R"),
+                        (ViewPreset::Left, "L"),
                         (ViewPreset::Isometric, "Iso"),
                     ] {
                         if ui.small_button(label).clicked() {
@@ -147,6 +172,9 @@ impl UiState {
 
                     ui.separator();
                     ui.checkbox(&mut self.show_grid, egui::RichText::new("Grid").size(10.0));
+                    if self.wireframe_supported {
+                        ui.checkbox(&mut self.show_wireframe, egui::RichText::new("Wire").size(10.0));
+                    }
                     ui.checkbox(&mut self.show_chat, egui::RichText::new("Chat").size(10.0));
                 });
             });
@@ -205,7 +233,7 @@ impl UiState {
                             ui.label(egui::RichText::new("Dist:").size(10.0));
                             ui.add(egui::DragValue::new(&mut self.extrude_distance)
                                 .speed(0.01)
-                                .range(0.01..=10.0)
+                                .range(-10.0..=10.0)
                                 .suffix(" m"));
                         });
                         ui.add_space(4.0);
@@ -231,10 +259,43 @@ impl UiState {
                         ui.label(egui::RichText::new("Esc = cancel | Ctrl+Z = undo").weak().size(8.0));
                         ui.label(egui::RichText::new("Right-click = stop chain").weak().size(8.0));
                     }
+                    Tool::Cut => {
+                        ui.label(egui::RichText::new("Cut").strong().size(11.0).color(egui::Color32::from_rgb(230, 80, 60)));
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Depth:").size(10.0));
+                            ui.add(egui::DragValue::new(&mut self.cut_depth)
+                                .speed(0.01)
+                                .range(0.01..=10.0)
+                                .suffix(" m"));
+                        });
+                        ui.add_space(4.0);
+                        if ui.button(egui::RichText::new("Apply Cut").size(11.0)).clicked() {
+                            self.cut_request = Some(self.cut_depth);
+                        }
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Select a face, then cut").weak().size(9.0));
+                    }
+                    Tool::Inset => {
+                        ui.label(egui::RichText::new("Inset").strong().size(11.0).color(egui::Color32::from_rgb(100, 200, 200)));
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Amount:").size(10.0));
+                            ui.add(egui::DragValue::new(&mut self.inset_amount)
+                                .speed(0.005)
+                                .range(0.01..=5.0)
+                                .suffix(" m"));
+                        });
+                        ui.add_space(4.0);
+                        if ui.button(egui::RichText::new("Apply Inset").size(11.0)).clicked() {
+                            self.inset_request = Some(self.inset_amount);
+                        }
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Select a face, then inset").weak().size(9.0));
+                    }
                     _ => {
                         let name = match self.active_tool {
                             Tool::Select => "Select",
-                            Tool::Cut => "Cut",
                             Tool::Fillet => "Fillet",
                             _ => "",
                         };

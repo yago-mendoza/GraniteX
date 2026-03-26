@@ -16,7 +16,7 @@ use crate::renderer::vertex::Vertex;
 #[derive(Clone)]
 pub struct MeshSnapshot {
     pub vertices: Vec<Vertex>,
-    pub indices: Vec<u16>,
+    pub indices: Vec<u32>,
     pub next_face_id: u32,
 }
 
@@ -92,15 +92,4 @@ impl CommandHistory {
         }
     }
 
-    pub fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
-    }
-
-    pub fn can_redo(&self) -> bool {
-        !self.redo_stack.is_empty()
-    }
-
-    pub fn undo_count(&self) -> usize {
-        self.undo_stack.len()
-    }
 }

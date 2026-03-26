@@ -13,7 +13,7 @@ const EDGE_EPSILON: f32 = 1e-4;        // distance threshold for "same point"
 
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
-    pub indices: Vec<u16>,
+    pub indices: Vec<u32>,
     next_face_id: u32,
 }
 
@@ -57,7 +57,7 @@ impl Mesh {
         ];
 
         #[rustfmt::skip]
-        let indices: Vec<u16> = vec![
+        let indices: Vec<u32> = vec![
             0,  1,  2,  0,  2,  3,
             4,  6,  5,  4,  7,  6,
             8,  9,  10, 8,  10, 11,
@@ -69,8 +69,64 @@ impl Mesh {
         Self { vertices, indices, next_face_id: 6 }
     }
 
-    pub fn indices_u16(&self) -> &[u16] {
-        &self.indices
+    #[allow(dead_code)]
+    pub fn empty() -> Self {
+        Self { vertices: Vec::new(), indices: Vec::new(), next_face_id: 0 }
+    }
+
+    /// Construct mesh from raw triangle data (for importers).
+    /// Each triangle gets its own face_id (flat shading).
+    pub fn from_triangles(positions: &[Vec3], normals: &[Vec3], indices: &[u32]) -> Self {
+        let mut vertices = Vec::with_capacity(indices.len());
+        let mut out_indices = Vec::with_capacity(indices.len());
+        let mut face_id = 0u32;
+
+        for tri in indices.chunks(3) {
+            let i0 = tri[0] as usize;
+            let i1 = tri[1] as usize;
+            let i2 = tri[2] as usize;
+
+            // Use per-face normal if provided, otherwise compute from triangle
+            let normal = if !normals.is_empty() && normals.len() > i0 {
+                normals[i0]
+            } else {
+                let e1 = positions[i1] - positions[i0];
+                let e2 = positions[i2] - positions[i0];
+                e1.cross(e2).normalize_or_zero()
+            };
+
+            let base = vertices.len() as u32;
+            for &idx in tri {
+                let p = positions[idx as usize];
+                vertices.push(Vertex {
+                    position: p.into(),
+                    normal: normal.into(),
+                    face_id,
+                    _pad: 0,
+                });
+            }
+            out_indices.push(base);
+            out_indices.push(base + 1);
+            out_indices.push(base + 2);
+            face_id += 1;
+        }
+
+        Self { vertices, indices: out_indices, next_face_id: face_id }
+    }
+
+    /// Axis-aligned bounding box: (min, max).
+    pub fn bounding_box(&self) -> (Vec3, Vec3) {
+        if self.vertices.is_empty() {
+            return (Vec3::ZERO, Vec3::ZERO);
+        }
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for v in &self.vertices {
+            let p = Vec3::from(v.position);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        (min, max)
     }
 
     pub fn face_normal(&self, face_id: u32) -> Option<Vec3> {
@@ -167,11 +223,8 @@ impl Mesh {
             return None;
         }
 
-        if positions.len() <= 4 {
-            return Some(positions);
-        }
-
-        // For >4 unique positions: sort by angle around center on the face plane.
+        // Always sort by angle to ensure correct winding order.
+        // Without this, 4-vertex faces can have crossed quads on extrude.
         // This gives the correct polygon boundary for convex shapes (circles, merged rects).
         let center: Vec3 = positions.iter().copied().sum::<Vec3>() / positions.len() as f32;
 
@@ -251,7 +304,7 @@ impl Mesh {
                     id
                 });
 
-            let base_idx = self.vertices.len() as u16;
+            let base_idx = self.vertices.len() as u32;
 
             let v = |pos: [f32; 3]| Vertex {
                 position: pos,
@@ -285,7 +338,7 @@ impl Mesh {
 
         if points.len() < 3 { return face_id; }
 
-        let base_idx = self.vertices.len() as u16;
+        let base_idx = self.vertices.len() as u32;
 
         // Offset slightly along normal so contour renders on top of parent face
         let offset = normal * 0.002;
@@ -300,7 +353,7 @@ impl Mesh {
         }
 
         // Fan triangulation
-        for i in 1..(points.len() as u16 - 1) {
+        for i in 1..(points.len() as u32 - 1) {
             self.indices.push(base_idx);
             self.indices.push(base_idx + i);
             self.indices.push(base_idx + i + 1);
@@ -309,12 +362,200 @@ impl Mesh {
         face_id
     }
 
+    /// Cut into a face along its negative normal by `depth`.
+    /// Creates a pocket: the face moves inward, side walls are added.
+    /// No coplanar merging (walls form pocket interior).
+    /// Returns the new floor face_id.
+    pub fn cut_face(&mut self, face_id: u32, depth: f32) -> Option<u32> {
+        let normal = self.face_normal(face_id)?;
+        let offset = normal * (-depth); // inward
+
+        let corners = self.face_boundary_corners(face_id)?;
+        let n = corners.len();
+        if n < 3 { return None; }
+
+        let face_verts = self.face_vertex_indices(face_id);
+        let old_positions: Vec<[f32; 3]> = corners.iter().map(|c| (*c).into()).collect();
+
+        // Move face inward → becomes floor of pocket
+        let floor_face_id = self.next_face_id;
+        self.next_face_id += 1;
+        for &vi in &face_verts {
+            let pos = Vec3::from(self.vertices[vi].position) + offset;
+            self.vertices[vi].position = pos.into();
+            self.vertices[vi].normal = normal.into(); // floor faces up (same as original)
+            self.vertices[vi].face_id = floor_face_id;
+        }
+
+        let new_positions: Vec<[f32; 3]> = old_positions.iter()
+            .map(|p| (Vec3::from(*p) + offset).into())
+            .collect();
+
+        // Create N side quads (pocket walls). Each gets a unique face_id.
+        // Winding: old (top) to new (bottom), normals point inward (into pocket).
+        for i in 0..n {
+            let j = (i + 1) % n;
+
+            let top0 = old_positions[i];
+            let top1 = old_positions[j];
+            let bot0 = new_positions[i];
+            let bot1 = new_positions[j];
+
+            // Normal points inward (opposite of extrude)
+            let edge_h = Vec3::from(bot0) - Vec3::from(top0);
+            let edge_w = Vec3::from(top1) - Vec3::from(top0);
+            let side_normal = edge_h.cross(edge_w).normalize();
+
+            let wall_face_id = self.next_face_id;
+            self.next_face_id += 1;
+
+            let base_idx = self.vertices.len() as u32;
+
+            let v = |pos: [f32; 3]| Vertex {
+                position: pos,
+                normal: side_normal.into(),
+                face_id: wall_face_id,
+                _pad: 0,
+            };
+
+            // Quad: top0, top1, bot1, bot0
+            self.vertices.push(v(top0));
+            self.vertices.push(v(top1));
+            self.vertices.push(v(bot1));
+            self.vertices.push(v(bot0));
+
+            self.indices.push(base_idx);
+            self.indices.push(base_idx + 1);
+            self.indices.push(base_idx + 2);
+            self.indices.push(base_idx);
+            self.indices.push(base_idx + 2);
+            self.indices.push(base_idx + 3);
+        }
+
+        Some(floor_face_id)
+    }
+
     pub fn next_face_id(&self) -> u32 {
         self.next_face_id
     }
 
     pub fn set_next_face_id(&mut self, id: u32) {
         self.next_face_id = id;
+    }
+
+    /// Delete a face and compact the mesh (removes orphaned vertices).
+    /// Returns true if the face was found and deleted.
+    pub fn delete_face(&mut self, face_id: u32) -> bool {
+        // Remove triangles belonging to this face
+        let mut new_indices: Vec<u32> = Vec::new();
+        for chunk in self.indices.chunks(3) {
+            if self.vertices[chunk[0] as usize].face_id != face_id {
+                new_indices.extend_from_slice(chunk);
+            }
+        }
+
+        if new_indices.len() == self.indices.len() {
+            return false;
+        }
+
+        // Find which vertices are still referenced
+        let mut used = vec![false; self.vertices.len()];
+        for &idx in &new_indices {
+            used[idx as usize] = true;
+        }
+
+        // Build remap table and compact vertices
+        let mut remap = vec![0u32; self.vertices.len()];
+        let mut new_verts = Vec::new();
+        for (old_idx, vertex) in self.vertices.iter().enumerate() {
+            if used[old_idx] {
+                remap[old_idx] = new_verts.len() as u32;
+                new_verts.push(*vertex);
+            }
+        }
+
+        // Remap indices
+        for idx in &mut new_indices {
+            *idx = remap[*idx as usize];
+        }
+
+        self.vertices = new_verts;
+        self.indices = new_indices;
+        true
+    }
+
+    /// Inset a face: shrinks the boundary toward its center, creating
+    /// a smaller inner face and connecting quad strips around the edge.
+    /// `amount` is the absolute inset distance.
+    /// Returns the inner face_id if successful.
+    pub fn inset_face(&mut self, face_id: u32, amount: f32) -> Option<u32> {
+        let normal = self.face_normal(face_id)?;
+        let corners = self.face_boundary_corners(face_id)?;
+        let n = corners.len();
+        if n < 3 { return None; }
+
+        let center: Vec3 = corners.iter().copied().sum::<Vec3>() / n as f32;
+
+        // Compute inner corners by moving each corner toward center
+        let inner_corners: Vec<Vec3> = corners.iter().map(|c| {
+            let dir = (center - *c).normalize_or_zero();
+            *c + dir * amount
+        }).collect();
+
+        // Delete original face geometry
+        self.delete_face(face_id);
+
+        // Add inner face (same normal)
+        let inner_face_id = self.next_face_id;
+        self.next_face_id += 1;
+
+        let inner_base = self.vertices.len() as u32;
+        for p in &inner_corners {
+            self.vertices.push(Vertex {
+                position: (*p).into(),
+                normal: normal.into(),
+                face_id: inner_face_id,
+                _pad: 0,
+            });
+        }
+        // Fan triangulation for inner face
+        for i in 1..(n as u32 - 1) {
+            self.indices.push(inner_base);
+            self.indices.push(inner_base + i);
+            self.indices.push(inner_base + i + 1);
+        }
+
+        // Add N connecting quads between outer boundary and inner boundary
+        for i in 0..n {
+            let j = (i + 1) % n;
+
+            let quad_face_id = self.next_face_id;
+            self.next_face_id += 1;
+
+            let base = self.vertices.len() as u32;
+            let quad_verts = [
+                corners[i], corners[j], inner_corners[j], inner_corners[i],
+            ];
+
+            for p in &quad_verts {
+                self.vertices.push(Vertex {
+                    position: (*p).into(),
+                    normal: normal.into(),
+                    face_id: quad_face_id,
+                    _pad: 0,
+                });
+            }
+
+            // Two triangles per quad
+            self.indices.push(base);
+            self.indices.push(base + 1);
+            self.indices.push(base + 2);
+            self.indices.push(base);
+            self.indices.push(base + 2);
+            self.indices.push(base + 3);
+        }
+
+        Some(inner_face_id)
     }
 
     pub fn face_count(&self) -> u32 {

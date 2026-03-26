@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd.exe /c \"where cargo\")",
+      "Bash(cmd.exe /c \"where rustc\")",
+      "Bash(git remote:*)",
+      "Bash(git branch:*)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\")",
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo init:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(export PATH=$HOME/.cargo/bin:$PATH)",
+      "Read(//c/Dev/granitex/$HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-wgpu-0.30.0/src/**)",
+      "Bash(taskkill:*)",
+      "Bash(cargo check:*)",
+      "Bash(tasklist)",
+      "Bash(find src:*)",
+      "Bash(xargs wc:*)",
+      "Bash(git commit:*)",
+      "Bash(export PATH=\"$PATH:/c/Users/f29de/.cargo/bin\")",
+      "Bash(wc:*)",
+      "Bash(git add:*)",
+      "Bash(git reset:*)",
+      "Bash(git push:*)",
+      "Bash(/c/Users/$USERNAME/.cargo/bin/cargo check:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(RUSTFLAGS=\"-W warnings\" cargo build)"
+    ]
+  }
+}

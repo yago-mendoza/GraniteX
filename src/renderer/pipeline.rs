@@ -10,12 +10,13 @@ use super::vertex::Vertex;
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct SceneUniform {
     view_proj: [[f32; 4]; 4],
+    camera_eye: [f32; 3],
     selected_face: i32,
-    _pad: [i32; 3],
 }
 
 pub struct MeshPipeline {
     pipeline: wgpu::RenderPipeline,
+    wireframe_pipeline: Option<wgpu::RenderPipeline>,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
@@ -23,6 +24,7 @@ pub struct MeshPipeline {
     bind_group: wgpu::BindGroup,
     selected_face: Option<u32>,
     cached_view_proj: [[f32; 4]; 4],
+    cached_eye: [f32; 3],
 }
 
 impl MeshPipeline {
@@ -31,6 +33,7 @@ impl MeshPipeline {
         config: &wgpu::SurfaceConfiguration,
         camera: &Camera,
         mesh: &Mesh,
+        device_features: wgpu::Features,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Mesh Shader"),
@@ -39,8 +42,8 @@ impl MeshPipeline {
 
         let uniform = SceneUniform {
             view_proj: camera.uniform().view_proj,
+            camera_eye: camera.eye().into(),
             selected_face: -1,
-            _pad: [0; 3],
         };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -118,10 +121,56 @@ impl MeshPipeline {
             cache: None,
         });
 
+        let wireframe_pipeline = if device_features.contains(wgpu::Features::POLYGON_MODE_LINE) {
+            Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Wireframe Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::layout()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    polygon_mode: wgpu::PolygonMode::Line,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: super::gpu_state::MSAA_SAMPLE_COUNT,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+                cache: None,
+            }))
+        } else {
+            None
+        };
+
         let (vertex_buffer, index_buffer, num_indices) = Self::create_buffers(device, mesh);
 
         Self {
             pipeline,
+            wireframe_pipeline,
             vertex_buffer,
             index_buffer,
             num_indices,
@@ -129,6 +178,7 @@ impl MeshPipeline {
             bind_group,
             selected_face: None,
             cached_view_proj: uniform.view_proj,
+            cached_eye: camera.eye().into(),
         }
     }
 
@@ -141,7 +191,7 @@ impl MeshPipeline {
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mesh Indices"),
-            contents: bytemuck::cast_slice(mesh.indices_u16()),
+            contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
 
@@ -158,6 +208,7 @@ impl MeshPipeline {
 
     pub fn update_camera(&mut self, queue: &wgpu::Queue, camera: &Camera) {
         self.cached_view_proj = camera.uniform().view_proj;
+        self.cached_eye = camera.eye().into();
         self.write_uniform(queue);
     }
 
@@ -169,8 +220,8 @@ impl MeshPipeline {
     fn write_uniform(&self, queue: &wgpu::Queue) {
         let uniform = SceneUniform {
             view_proj: self.cached_view_proj,
+            camera_eye: self.cached_eye,
             selected_face: self.selected_face.map(|f| f as i32).unwrap_or(-1),
-            _pad: [0; 3],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
@@ -179,7 +230,21 @@ impl MeshPipeline {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..self.num_indices, 0, 0..1);
+    }
+
+    pub fn draw_wireframe<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if let Some(ref wf) = self.wireframe_pipeline {
+            pass.set_pipeline(wf);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        }
+    }
+
+    pub fn has_wireframe(&self) -> bool {
+        self.wireframe_pipeline.is_some()
     }
 }

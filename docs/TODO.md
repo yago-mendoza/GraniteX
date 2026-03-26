@@ -1,6 +1,6 @@
 # GraniteX — Master TODO
 
-Last updated: 2026-03-26
+Last updated: 2026-03-26 (Session 4)
 
 ## Legend
 - [ ] Not started
@@ -10,54 +10,54 @@ Last updated: 2026-03-26
 
 ---
 
-## Phase 0: Project Bootstrap (Target: 2026-03-27)
+## Phase 0: Project Bootstrap (Target: 2026-03-27) — COMPLETE
 
 - [x] **P0** Create GitHub repo (yago-mendoza/GraniteX)
 - [x] **P0** Initialize project structure (README, docs/)
 - [x] **P0** Set up CLAUDE.md with project instructions
 - [x] **P0** Set up docs/ as persistent brain
-- [ ] **P0** Install Rust toolchain on Yago's machine
-- [ ] **P0** Create Cargo.toml with initial dependencies
-- [ ] **P0** Create module skeleton (src/main.rs, src/app.rs, src/renderer/, etc.)
-- [ ] **P1** Set up .gitignore
-- [ ] **P1** Initial commit and push to GitHub
+- [x] **P0** Install Rust toolchain on Yago's machine
+- [x] **P0** Create Cargo.toml with initial dependencies
+- [x] **P0** Create module skeleton (src/main.rs, src/app.rs, src/renderer/, etc.)
+- [x] **P1** Set up .gitignore
+- [x] **P1** Initial commit and push to GitHub
 - [ ] **P2** Set up cargo-watch for dev loop
 - [ ] **P2** Set up cargo-nextest
 - [ ] **P3** GitHub Actions CI (clippy + fmt + test)
 
-## Phase 1: Window + 3D Viewport (Target: 2026-04-03)
+## Phase 1: Window + 3D Viewport (Target: 2026-04-03) — COMPLETE
 
-- [ ] **P0** wgpu device/surface initialization
-- [ ] **P0** winit event loop with resize handling
-- [ ] **P0** Basic render pipeline (vertex + fragment shaders)
-- [ ] **P0** Render a colored cube (hello world of 3D)
-- [ ] **P1** Orbit camera (arcball rotation)
-- [ ] **P1** Camera pan (middle mouse)
-- [ ] **P1** Camera zoom (scroll wheel)
-- [ ] **P1** Infinite grid on XZ plane
-- [ ] **P2** Axis indicator (RGB XYZ gizmo in corner)
-- [ ] **P2** Wireframe overlay toggle
-- [ ] **P3** Anti-aliasing (MSAA)
+- [x] **P0** wgpu device/surface initialization
+- [x] **P0** winit event loop with resize handling
+- [x] **P0** Basic render pipeline (vertex + fragment shaders)
+- [x] **P0** Render a colored cube (hello world of 3D)
+- [x] **P1** Orbit camera (arcball rotation)
+- [x] **P1** Camera pan (middle mouse + Ctrl)
+- [x] **P1** Camera zoom (scroll wheel)
+- [x] **P1** Infinite grid on XZ plane
+- [x] **P2** Axis indicator (RGB XYZ gizmo in corner)
+- [x] **P2** Wireframe overlay toggle (POLYGON_MODE_LINE, auto-detected)
+- [x] **P3** Anti-aliasing (MSAA 4x)
 - [ ] **P3** Depth-based grid fade
 
-## Phase 2: Mesh Import & Display (Target: 2026-04-15)
+## Phase 2: Mesh Import & Display (Target: 2026-04-15) — IN PROGRESS
 
-- [ ] **P0** STL file loading (binary + ASCII)
-- [ ] **P0** OBJ file loading
-- [ ] **P0** Indexed mesh data structure (positions + normals + indices)
-- [ ] **P0** Flat shading with normals
+- [x] **P0** STL file loading (binary + ASCII)
+- [x] **P0** OBJ file loading (via tobj)
+- [x] **P0** Indexed mesh data structure (positions + normals + u32 indices)
+- [x] **P0** Flat shading with normals
 - [ ] **P1** Smooth shading (vertex normals)
-- [ ] **P1** Bounding box calculation + auto-fit camera
-- [ ] **P1** Drag-and-drop file import
-- [ ] **P2** Mesh info panel (vertex count, face count, dimensions)
+- [x] **P1** Bounding box calculation + auto-fit camera
+- [x] **P1** Drag-and-drop file import
+- [x] **P2** Mesh info panel (vertex count, face count, dimensions — in status bar)
 - [ ] **P2** Multiple meshes in scene
 - [ ] **P3** PLY file support
 - [ ] **P3** glTF import
 
-## Phase 3: Selection & Interaction (Target: 2026-05-01)
+## Phase 3: Selection & Interaction (Target: 2026-05-01) — PARTIAL
 
-- [ ] **P0** Ray casting from mouse into scene
-- [ ] **P0** Face selection (highlight selected face)
+- [x] **P0** Ray casting from mouse into scene
+- [x] **P0** Face selection (highlight selected face)
 - [ ] **P0** Edge selection
 - [ ] **P0** Vertex selection
 - [ ] **P1** Multi-select (Shift+click)

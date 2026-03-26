@@ -45,6 +45,7 @@ pub struct Renderer {
     // Scene state
     pub mesh: Mesh,
     pub show_grid: bool,
+    pub show_wireframe: bool,
     pub selected_face: Option<u32>,
 }
 
@@ -53,7 +54,7 @@ impl Renderer {
         let gpu = GpuState::new(window).await;
         let camera = Camera::new(gpu.config.width as f32 / gpu.config.height as f32);
         let mesh = Mesh::cube();
-        let mesh_pipeline = MeshPipeline::new(&gpu.device, &gpu.config, &camera, &mesh);
+        let mesh_pipeline = MeshPipeline::new(&gpu.device, &gpu.config, &camera, &mesh, gpu.features);
         let grid = GridPipeline::new(&gpu.device, &gpu.config, &camera);
         let gizmo = GizmoPipeline::new(&gpu.device, &gpu.config, &camera);
         let preview = PreviewPipeline::new(&gpu.device, &gpu.config, &camera);
@@ -78,6 +79,7 @@ impl Renderer {
             egui_renderer,
             mesh,
             show_grid: true,
+            show_wireframe: false,
             selected_face: None,
         }
     }
@@ -143,7 +145,16 @@ impl Renderer {
     /// Update the extrude preview ghost (transparent blue).
     pub fn update_extrude_preview(&mut self, distance: f32) {
         if let Some(face_id) = self.selected_face {
-            self.preview.set_extrude_preview(&self.gpu.device, &self.mesh, face_id, distance);
+            self.preview.set_extrude_preview(&self.gpu.device, &self.gpu.queue, &self.mesh, face_id, distance);
+        } else {
+            self.preview.clear();
+        }
+    }
+
+    /// Update the cut preview ghost (transparent red).
+    pub fn update_cut_preview(&mut self, depth: f32) {
+        if let Some(face_id) = self.selected_face {
+            self.preview.set_cut_preview(&self.gpu.device, &self.gpu.queue, &self.mesh, face_id, depth);
         } else {
             self.preview.clear();
         }
@@ -187,10 +198,6 @@ impl Renderer {
         self.gpu.config.height as f32
     }
 
-    /// Get camera eye position (for sketch line rendering).
-    pub fn camera_eye(&self) -> glam::Vec3 {
-        self.camera.eye()
-    }
 
     /// Unproject screen coordinates to a ray (origin, direction).
     pub fn screen_to_ray(&self, screen_x: f32, screen_y: f32) -> (glam::Vec3, glam::Vec3) {
@@ -220,6 +227,28 @@ impl Renderer {
         Some(positions.iter().copied().sum::<glam::Vec3>() / positions.len() as f32)
     }
 
+    // --- Mesh loading ---
+
+    /// Replace the current mesh with a new one (for file import).
+    pub fn load_mesh(&mut self, mesh: Mesh) {
+        self.mesh = mesh;
+        self.selected_face = None;
+        self.mesh_pipeline.rebuild_buffers(&self.gpu.device, &self.mesh);
+        self.mesh_pipeline.set_selected_face(&self.gpu.queue, None);
+        self.fit_camera();
+    }
+
+    /// Auto-fit camera to current mesh bounding box.
+    pub fn fit_camera(&mut self) {
+        let (min, max) = self.mesh.bounding_box();
+        self.camera.fit_to_bounds(min, max);
+        self.sync_camera();
+    }
+
+    pub fn has_wireframe(&self) -> bool {
+        self.mesh_pipeline.has_wireframe()
+    }
+
     // --- Operations ---
 
     /// Extrude the currently selected face by `distance` along its normal.
@@ -232,6 +261,20 @@ impl Renderer {
         self.mesh_pipeline.rebuild_buffers(&self.gpu.device, &self.mesh);
 
         // Select the new cap face
+        self.selected_face = Some(new_face);
+        self.mesh_pipeline.set_selected_face(&self.gpu.queue, self.selected_face);
+
+        Some(new_face)
+    }
+
+    /// Cut the currently selected face inward by `depth`.
+    /// Returns the new floor face_id if successful.
+    pub fn cut_selected(&mut self, depth: f32) -> Option<u32> {
+        let face_id = self.selected_face?;
+        let new_face = self.mesh.cut_face(face_id, depth)?;
+
+        self.mesh_pipeline.rebuild_buffers(&self.gpu.device, &self.mesh);
+
         self.selected_face = Some(new_face);
         self.mesh_pipeline.set_selected_face(&self.gpu.queue, self.selected_face);
 
@@ -303,7 +346,11 @@ impl Renderer {
             if self.show_grid {
                 self.grid.draw(&mut pass);
             }
-            self.mesh_pipeline.draw(&mut pass);
+            if self.show_wireframe {
+                self.mesh_pipeline.draw_wireframe(&mut pass);
+            } else {
+                self.mesh_pipeline.draw(&mut pass);
+            }
             self.preview.draw(&mut pass);
             self.sketch_renderer.draw(&mut pass);
             self.gizmo.draw(&mut pass, self.gpu.config.width, self.gpu.config.height);

@@ -10,6 +10,7 @@ use super::mesh::Mesh;
 pub struct PickResult {
     pub face_id: u32,
     pub distance: f32,
+    #[allow(dead_code)]
     pub hit_point: Vec3,
 }
 
@@ -37,7 +38,7 @@ pub fn pick_face(
     let ray_dir = (far - near).normalize();
 
     let mut best: Option<PickResult> = None;
-    let indices = mesh.indices_u16();
+    let indices = &mesh.indices;
     let verts = &mesh.vertices;
 
     for tri_start in (0..indices.len()).step_by(3) {

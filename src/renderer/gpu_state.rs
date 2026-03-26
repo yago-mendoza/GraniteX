@@ -10,6 +10,7 @@ pub struct GpuState {
     pub config: wgpu::SurfaceConfiguration,
     pub depth_texture: wgpu::Texture,
     pub msaa_texture: wgpu::Texture,
+    pub features: wgpu::Features,
 }
 
 impl GpuState {
@@ -40,11 +41,14 @@ impl GpuState {
 
         log::info!("Using GPU: {}", adapter.get_info().name);
 
+        let desired = wgpu::Features::POLYGON_MODE_LINE;
+        let features = desired & adapter.features();
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("GraniteX Device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features: features,
                     required_limits: wgpu::Limits::default(),
                     memory_hints: wgpu::MemoryHints::default(),
                 },
@@ -83,6 +87,7 @@ impl GpuState {
             config,
             depth_texture,
             msaa_texture,
+            features,
         }
     }
 

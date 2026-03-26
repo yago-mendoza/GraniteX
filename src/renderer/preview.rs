@@ -19,7 +19,11 @@ struct PreviewVertex {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct PreviewUniform {
     view_proj: [[f32; 4]; 4],
+    color: [f32; 4],
 }
+
+const EXTRUDE_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.25];
+const CUT_COLOR: [f32; 4] = [0.9, 0.25, 0.2, 0.3];
 
 pub struct PreviewPipeline {
     pipeline: wgpu::RenderPipeline,
@@ -28,6 +32,7 @@ pub struct PreviewPipeline {
     vertex_buffer: Option<wgpu::Buffer>,
     num_vertices: u32,
     cached_view_proj: [[f32; 4]; 4],
+    cached_color: [f32; 4],
 }
 
 impl PreviewPipeline {
@@ -39,6 +44,7 @@ impl PreviewPipeline {
 
         let uniform = PreviewUniform {
             view_proj: camera.uniform().view_proj,
+            color: EXTRUDE_COLOR,
         };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -51,7 +57,7 @@ impl PreviewPipeline {
             label: Some("Preview BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -133,12 +139,19 @@ impl PreviewPipeline {
             vertex_buffer: None,
             num_vertices: 0,
             cached_view_proj: uniform.view_proj,
+            cached_color: EXTRUDE_COLOR,
         }
     }
 
     pub fn update_camera(&mut self, queue: &wgpu::Queue, camera: &Camera) {
         self.cached_view_proj = camera.uniform().view_proj;
-        let uniform = PreviewUniform { view_proj: self.cached_view_proj };
+        let uniform = PreviewUniform { view_proj: self.cached_view_proj, color: self.cached_color };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
+    }
+
+    fn write_color(&mut self, queue: &wgpu::Queue, color: [f32; 4]) {
+        self.cached_color = color;
+        let uniform = PreviewUniform { view_proj: self.cached_view_proj, color };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
@@ -146,6 +159,7 @@ impl PreviewPipeline {
     pub fn set_extrude_preview(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         mesh: &Mesh,
         face_id: u32,
         distance: f32,
@@ -189,6 +203,7 @@ impl PreviewPipeline {
             verts.push(pv(t0));
         }
 
+        self.write_color(queue, EXTRUDE_COLOR);
         self.num_vertices = verts.len() as u32;
         self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Preview Vertices"),
@@ -197,13 +212,65 @@ impl PreviewPipeline {
         }));
     }
 
+    /// Generate preview geometry for a cut operation (inward, red ghost).
+    pub fn set_cut_preview(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: &Mesh,
+        face_id: u32,
+        depth: f32,
+    ) {
+        let Some(normal) = mesh.face_normal(face_id) else { return };
+        let offset = normal * (-depth); // inward
+
+        let Some(corners) = mesh.face_boundary_corners(face_id) else {
+            self.clear();
+            return;
+        };
+
+        let face_positions = corners;
+        let new_positions: Vec<Vec3> = face_positions.iter().map(|p| *p + offset).collect();
+
+        let mut verts = Vec::new();
+        let pv = |p: Vec3| PreviewVertex { position: p.into(), _pad: 0.0 };
+
+        // Floor face (fan triangulation)
+        let n = new_positions.len();
+        for i in 1..(n - 1) {
+            verts.push(pv(new_positions[0]));
+            verts.push(pv(new_positions[i]));
+            verts.push(pv(new_positions[i + 1]));
+        }
+
+        // N side wall faces
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let t0 = face_positions[i];
+            let t1 = face_positions[j];
+            let b0 = new_positions[i];
+            let b1 = new_positions[j];
+
+            verts.push(pv(t0));
+            verts.push(pv(t1));
+            verts.push(pv(b1));
+            verts.push(pv(t0));
+            verts.push(pv(b1));
+            verts.push(pv(b0));
+        }
+
+        self.write_color(queue, CUT_COLOR);
+        self.num_vertices = verts.len() as u32;
+        self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cut Preview Vertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+    }
+
     pub fn clear(&mut self) {
         self.vertex_buffer = None;
         self.num_vertices = 0;
-    }
-
-    pub fn has_preview(&self) -> bool {
-        self.vertex_buffer.is_some() && self.num_vertices > 0
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {

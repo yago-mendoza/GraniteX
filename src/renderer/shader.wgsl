@@ -1,5 +1,6 @@
 struct SceneUniform {
     view_proj: mat4x4<f32>,
+    camera_eye: vec3<f32>,
     selected_face: i32,
 };
 
@@ -33,6 +34,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(in.world_normal);
 
+    // Two-light setup for industrial CAD look
     let light_dir_1 = normalize(vec3<f32>(0.5, 0.8, 0.3));
     let light_dir_2 = normalize(vec3<f32>(-0.3, 0.4, -0.6));
 
@@ -45,8 +47,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = ndl_1 * 0.55 + ndl_2 * 0.25;
     var color = base_color * (ambient + diffuse);
 
-    // Fresnel edge darkening
-    let view_dir = normalize(vec3<f32>(2.0, 1.5, 2.0) - in.world_position);
+    // Fresnel edge darkening — uses actual camera position, not hardcoded
+    let view_dir = normalize(scene.camera_eye - in.world_position);
     let fresnel = pow(1.0 - max(dot(normal, view_dir), 0.0), 3.0);
     color = mix(color, vec3<f32>(0.2, 0.22, 0.25), fresnel * 0.3);
 

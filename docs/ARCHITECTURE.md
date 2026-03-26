@@ -24,9 +24,10 @@ GraniteX is a 3D CAD application built in Rust, targeting mesh editing and event
 - **earcut** — Triangulation of polygons.
 
 ### File I/O
-- **stl_io** / **nom-stl** — STL import/export.
-- **obj-rs** — OBJ import.
-- **truck** (optional) — Rust BREP kernel with STEP support (experimental).
+- **Hand-rolled STL parser** — Binary + ASCII, zero external deps.
+- **tobj** — OBJ import (well-maintained, handles materials).
+- **rfd** — Native file dialogs (cross-platform).
+- **truck** (optional, future) — Rust BREP kernel with STEP support.
 
 ### Testing & Quality
 - **criterion** — Benchmarking (critical for geometry/rendering perf).
@@ -46,32 +47,34 @@ GraniteX is a 3D CAD application built in Rust, targeting mesh editing and event
 granitex/
 ├── src/
 │   ├── main.rs              # Entry point
-│   ├── app.rs               # Application state & main loop
+│   ├── app/
+│   │   ├── mod.rs            # App struct, UI sync, event loop, file import
+│   │   ├── input.rs          # Mouse/keyboard input handling
+│   │   └── sketch_ops.rs     # Sketch drawing & contour→mesh conversion
+│   ├── commands.rs           # Undo/redo (mesh snapshot-based)
+│   ├── import/
+│   │   ├── mod.rs            # Load dispatcher (by file extension)
+│   │   ├── stl.rs            # STL parser (binary + ASCII, hand-rolled)
+│   │   └── obj.rs            # OBJ loader (via tobj)
 │   ├── renderer/
-│   │   ├── mod.rs            # Renderer orchestration
-│   │   ├── pipeline.rs       # Render pipelines (mesh, wireframe, grid)
-│   │   ├── camera.rs         # Camera (orbit, pan, zoom)
-│   │   ├── gpu_state.rs      # wgpu device/surface/queue
-│   │   └── vertex.rs         # Vertex formats
-│   ├── scene/
-│   │   ├── mod.rs            # Scene graph
-│   │   ├── mesh.rs           # Mesh data structure (half-edge or indexed)
-│   │   └── transform.rs      # Spatial transforms
-│   ├── ui/
-│   │   ├── mod.rs            # UI orchestration
-│   │   ├── viewport.rs       # 3D viewport panel
-│   │   ├── toolbar.rs        # Tool selection
-│   │   └── inspector.rs      # Object properties
-│   ├── io/
-│   │   ├── mod.rs
-│   │   ├── stl.rs            # STL import/export
-│   │   └── obj.rs            # OBJ import
-│   └── tools/
-│       ├── mod.rs            # Tool trait & registry
-│       ├── select.rs         # Selection tool
-│       └── transform.rs      # Move/rotate/scale gizmo
-├── docs/
-├── assets/                   # Test meshes, shaders
+│   │   ├── mod.rs            # Renderer orchestration, mesh loading
+│   │   ├── pipeline.rs       # Mesh render + wireframe pipelines
+│   │   ├── camera.rs         # Orbit/pan/zoom camera + fit_to_bounds
+│   │   ├── gpu_state.rs      # wgpu device/surface/queue + feature detection
+│   │   ├── mesh.rs           # Mesh data (vertices, u32 indices, face ops)
+│   │   ├── grid.rs           # Infinite XZ ground grid
+│   │   ├── gizmo.rs          # RGB XYZ axis indicator
+│   │   ├── preview.rs        # Extrude/cut ghost preview
+│   │   ├── sketch_renderer.rs # Sketch line rendering
+│   │   ├── picking.rs        # CPU raycasting for face selection
+│   │   ├── vertex.rs         # Vertex format (pos + normal + face_id)
+│   │   └── *.wgsl            # GPU shaders
+│   ├── sketch/
+│   │   ├── mod.rs            # Sketch state, 2D↔3D projection
+│   │   ├── entities.rs       # Line, rect, circle primitives
+│   │   └── plane.rs          # Sketch plane (normal, origin, axes)
+│   └── ui.rs                 # egui panels (toolbar, feature tree, chat, status)
+├── docs/                     # Claude's persistent brain
 └── Cargo.toml
 ```
 

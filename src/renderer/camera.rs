@@ -74,6 +74,15 @@ impl Camera {
         self.pitch = pitch;
     }
 
+    /// Frame the camera to fit a bounding box.
+    pub fn fit_to_bounds(&mut self, min: Vec3, max: Vec3) {
+        let center = (min + max) * 0.5;
+        let extent = (max - min).length();
+        self.target = center;
+        // Distance so the object fills ~60% of the viewport
+        self.distance = (extent / (2.0 * (self.fov_y / 2.0).tan())).max(0.5);
+    }
+
     pub fn view_matrix(&self) -> Mat4 {
         Mat4::look_at_rh(self.eye(), self.target, Vec3::Y)
     }

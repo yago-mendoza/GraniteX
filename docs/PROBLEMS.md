@@ -5,9 +5,9 @@ Last updated: 2026-03-26
 ## Active Blockers
 
 ### PROB-001: Rust not installed
-**Status:** BLOCKING — cannot proceed with any code until resolved
+**Status:** RESOLVED (2026-03-26)
 **Description:** Yago's machine doesn't have the Rust toolchain installed.
-**Resolution:** Install via rustup (rustup.rs or `winget install Rustlang.Rustup`). Need to restart terminal after install.
+**Resolution:** Installed Rust 1.94.0 via rustup.
 
 ## Anticipated Problems
 

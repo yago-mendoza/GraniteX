@@ -35,3 +35,25 @@
 - Documented: sketch plane construction, LM constraint solver algorithm, closed contour detection, rendering approach, under/over-constrained handling, data structures
 - Added to RESEARCH.md: 9 sections covering the full sketch system architecture
 - Key decisions: LM via argmin or hand-rolled, slotmap for entity storage, hybrid 3D+egui rendering, separate points with coincident constraints (not merged points)
+
+## 2026-03-26 — Session 4: Modular Foundation + Mesh Import
+
+### Architecture
+- Split app.rs (471 lines) into module directory: app/mod.rs (240), app/input.rs (132), app/sketch_ops.rs (159)
+- Upgraded indices from u16 to u32 — supports meshes with >65k vertices (essential for STL/OBJ import)
+- Created src/import/ module with error types via thiserror
+
+### New Features
+- **STL import**: Binary + ASCII parser (hand-rolled, zero deps). Reads header, triangle count, normals, positions.
+- **OBJ import**: Via tobj crate. Merges multiple models into single mesh with flat shading.
+- **File dialog**: rfd crate. Import button in toolbar opens native OS file picker with STL/OBJ filters.
+- **Drag-and-drop**: Drop STL/OBJ files onto window to import. Handled via winit DroppedFile event.
+- **Auto-fit camera**: Camera.fit_to_bounds() frames imported mesh. Calculates bounding box, sets distance to fill ~60% viewport.
+- **Wireframe toggle**: POLYGON_MODE_LINE pipeline (auto-detected from GPU features). "Wire" checkbox in toolbar.
+- **Cut operation**: Cut into a face along its negative normal (pocket). Cut preview (red ghost). UI controls in left panel.
+
+### Infrastructure
+- Added deps: tobj (OBJ parsing), rfd (file dialogs), thiserror (error types)
+- GPU feature detection: POLYGON_MODE_LINE requested if available, wireframe UI hidden if not
+- Mesh::from_triangles() — generic constructor for imported meshes (each triangle gets unique face_id)
+- Mesh::bounding_box() — AABB computation for camera fitting
