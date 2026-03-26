@@ -57,3 +57,38 @@
 - GPU feature detection: POLYGON_MODE_LINE requested if available, wireframe UI hidden if not
 - Mesh::from_triangles() — generic constructor for imported meshes (each triangle gets unique face_id)
 - Mesh::bounding_box() — AABB computation for camera fitting
+
+## 2026-03-26 — Session 5: Code Health + Mesh Operations
+
+### Code Health
+- **Removed `#![allow(dead_code)]`** — global dead code suppression was hiding 6 warnings
+- Fixed all warnings: removed unused methods (undo_count, camera_eye, has_preview), wired all ViewPreset variants into toolbar (Back, Bottom, Left), targeted allows for future-ready API (hit_point, empty, set_view_instant)
+- Fixed borrow checker issue in apply_ui_state (import request must be handled before borrowing renderer)
+- Fixed stale `indices_u16()` call in picking.rs (leftover from u16→u32 migration)
+- Fixed missing `color` field in PreviewUniform constructor
+- Fixed missing `cached_eye` field in MeshPipeline constructor
+
+### New Features
+- **Delete face**: Select a face, press Delete key to remove it. Vertex compaction + index remapping.  Full undo support via Ctrl+Z.
+- **Inset face**: New Inset tool (toolbar button + "i" shortcut). Shrinks face boundary toward center by configurable amount, creates inner face + connecting quad strips. Selects the inner face after operation. Full undo support.
+- **All 7 view presets wired**: Front, Back, Top, Bottom, Right, Left, Isometric now all accessible from toolbar.
+
+### Architecture
+- Created app/mesh_ops.rs — mesh operations module (delete face)
+- Keyboard shortcuts expanded: Delete key → delete face, "i" → Inset tool
+
+## 2026-03-26 — Session 6: SolidWorks Polish
+
+### SolidWorks-Style Improvements
+- **Hover pre-highlight**: Faces now subtly highlight on mouse-over BEFORE clicking (warm light tint). Uses the existing raycast picker running per-frame when not dragging. New `hovered_face` field in shader uniform.
+- **Inset preview**: Teal transparent ghost shows the inset result in real-time as you adjust the amount slider. Same architecture as extrude/cut previews.
+- **Smooth camera transitions**: View presets (F/T/R/Iso) now animate with 0.25s ease-out cubic. Camera has `target_yaw/pitch` animation state, updated per frame.
+- **Edge rendering**: Dark line overlay on face boundaries (SolidWorks-style). Separate pipeline with depth bias to render on top of filled faces.
+- **Zoom-to-fit**: Home key frames the entire model in the viewport.
+- **Preview colors**: Extrude = blue, Cut = red, Inset = teal. Color passed via uniform to the preview shader.
+
+### Technical
+- Preview shader now receives color via uniform (was hardcoded blue). Shader reads `preview.color` instead of fixed vec4.
+- MeshPipeline SceneUniform expanded: `hovered_face: i32` field added alongside `selected_face`.
+- Renderer tracks `hovered_face: Option<u32>`, only updates uniform when hover changes (avoids unnecessary GPU writes).
+- All 3 operation tools (Extrude, Cut, Inset) now have consistent preview → apply → undo workflow.

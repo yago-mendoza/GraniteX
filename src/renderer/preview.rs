@@ -268,6 +268,62 @@ impl PreviewPipeline {
         }));
     }
 
+    /// Generate preview geometry for an inset operation (teal ghost).
+    /// Shows the inner face and connecting quads.
+    pub fn set_inset_preview(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: &Mesh,
+        face_id: u32,
+        amount: f32,
+    ) {
+        let Some(normal) = mesh.face_normal(face_id) else { return };
+        let Some(corners) = mesh.face_boundary_corners(face_id) else {
+            self.clear();
+            return;
+        };
+
+        let n = corners.len();
+        if n < 3 { self.clear(); return; }
+
+        let center: Vec3 = corners.iter().copied().sum::<Vec3>() / n as f32;
+        let inner: Vec<Vec3> = corners.iter().map(|c| {
+            let dir = (center - *c).normalize_or_zero();
+            *c + dir * amount
+        }).collect();
+
+        let mut verts = Vec::new();
+        let pv = |p: Vec3| PreviewVertex { position: (p + normal * 0.001).into(), _pad: 0.0 };
+
+        // Inner face (fan triangulation)
+        for i in 1..(n - 1) {
+            verts.push(pv(inner[0]));
+            verts.push(pv(inner[i]));
+            verts.push(pv(inner[i + 1]));
+        }
+
+        // Connecting quads between outer and inner
+        for i in 0..n {
+            let j = (i + 1) % n;
+            verts.push(pv(corners[i]));
+            verts.push(pv(corners[j]));
+            verts.push(pv(inner[j]));
+            verts.push(pv(corners[i]));
+            verts.push(pv(inner[j]));
+            verts.push(pv(inner[i]));
+        }
+
+        const INSET_COLOR: [f32; 4] = [0.2, 0.7, 0.7, 0.3];
+        self.write_color(queue, INSET_COLOR);
+        self.num_vertices = verts.len() as u32;
+        self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Inset Preview Vertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+    }
+
     pub fn clear(&mut self) {
         self.vertex_buffer = None;
         self.num_vertices = 0;

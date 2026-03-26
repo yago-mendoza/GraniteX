@@ -28,4 +28,27 @@ Last updated: 2026-03-26
 
 ## Technical Debt Register
 
-(Empty — no code yet. Will track debt as it accumulates.)
+### DEBT-001: Per-frame O(n) face_count()
+**Severity:** P2
+**Description:** `face_count()` collects all face_ids, sorts, and deduplicates every frame (called from UI stats). On large imported meshes this is wasteful.
+**Fix:** Cache face count; invalidate on mesh mutation.
+
+### DEBT-002: Full mesh snapshot on every undo checkpoint
+**Severity:** P2
+**Description:** `CommandHistory::save_state()` clones the entire vertex/index vectors. For large meshes (100k+ tris from STL import), each undo point is >1MB.
+**Fix:** Implement delta-based undo (store only changed faces) or copy-on-write with `Arc<Vec<...>>`.
+
+### DEBT-003: Linear scan in face_normal()
+**Severity:** P2
+**Description:** `face_normal()` does `.find()` on the full vertex list. Called frequently during operations and picking.
+**Fix:** Build `HashMap<face_id, FaceInfo>` cache.
+
+### DEBT-004: No BVH for picking
+**Severity:** P3 (fine for now, P1 at 10k+ faces)
+**Description:** `pick_face()` tests every triangle via Moller-Trumbore. O(n) per click/hover.
+**Fix:** Build AABB BVH tree, cull branches before triangle tests.
+
+### DEBT-005: Edge rendering requires POLYGON_MODE_LINE
+**Severity:** P2
+**Description:** Edge overlay uses `wgpu::PolygonMode::Line` which requires a device feature not available on all GPUs or WebGPU.
+**Fix:** Generate explicit edge line geometry from mesh topology (extract unique edges, render as LineList).

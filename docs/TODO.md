@@ -1,6 +1,6 @@
 # GraniteX — Master TODO
 
-Last updated: 2026-03-26 (Session 4)
+Last updated: 2026-03-26 (Session 6)
 
 ## Legend
 - [ ] Not started
@@ -58,6 +58,7 @@ Last updated: 2026-03-26 (Session 4)
 
 - [x] **P0** Ray casting from mouse into scene
 - [x] **P0** Face selection (highlight selected face)
+- [x] **P1** Hover pre-highlight (SolidWorks-style face highlight on mouse-over)
 - [ ] **P0** Edge selection
 - [ ] **P0** Vertex selection
 - [ ] **P1** Multi-select (Shift+click)
@@ -66,47 +67,48 @@ Last updated: 2026-03-26 (Session 4)
 - [ ] **P2** Marquee/box selection
 - [ ] **P2** Selection info in inspector
 
-## Phase 4: UI Shell (Target: 2026-05-15)
+## Phase 4: UI Shell (Target: 2026-05-15) — MOSTLY DONE
 
-- [ ] **P0** egui integration with wgpu viewport
-- [ ] **P0** Top toolbar (tool selection)
+- [x] **P0** egui integration with wgpu viewport
+- [x] **P0** Top toolbar (tool selection)
 - [ ] **P0** Right panel — inspector (object properties)
-- [ ] **P0** Left panel — scene tree / feature tree
-- [ ] **P1** Status bar (cursor position, selection info)
-- [ ] **P1** Keyboard shortcuts system
+- [x] **P0** Left panel — scene tree / feature tree
+- [x] **P1** Status bar (cursor position, selection info)
+- [x] **P1** Keyboard shortcuts system (SolidWorks-style: s/l/r/c/e/x/i/f/w/g + Del)
 - [ ] **P2** Dark/light theme
 - [ ] **P2** Dockable panels
 - [ ] **P3** Command palette (Ctrl+Shift+P)
 
-## Phase 5: Basic Mesh Operations (Target: 2026-06-01)
+## Phase 5: Basic Mesh Operations (Target: 2026-06-01) — PARTIAL
 
-- [ ] **P0** Extrude face
+- [x] **P0** Extrude face (with coplanar merging, blue preview, bidirectional)
+- [x] **P0** Cut face (inward pocket, red preview)
 - [ ] **P0** Move/translate selection
-- [ ] **P0** Delete face/edge/vertex
+- [x] **P0** Delete face (with vertex compaction + undo)
 - [ ] **P1** Transform gizmo (move/rotate/scale)
-- [ ] **P1** Inset face
+- [x] **P1** Inset face (shrink boundary + connecting quads, teal preview)
 - [ ] **P1** Loop cut
 - [ ] **P2** Merge vertices
 - [ ] **P2** Subdivide face
 - [ ] **P3** Knife tool
 
-## Phase 6: Undo/Redo & Project Files (Target: 2026-06-15)
+## Phase 6: Undo/Redo & Project Files (Target: 2026-06-15) — PARTIAL
 
-- [ ] **P0** Command pattern for all operations
-- [ ] **P0** Undo stack (Ctrl+Z)
-- [ ] **P0** Redo stack (Ctrl+Y)
+- [x] **P0** Command pattern for all operations (snapshot-based)
+- [x] **P0** Undo stack (Ctrl+Z)
+- [x] **P0** Redo stack (Ctrl+Y)
 - [ ] **P0** Save project (.gnx custom format)
 - [ ] **P0** Load project
 - [ ] **P1** Auto-save
 - [ ] **P1** Export to STL/OBJ
 - [ ] **P2** Recent files list
 
-## Phase 7: 2D Sketch Mode (Target: 2026-07-15)
+## Phase 7: 2D Sketch Mode (Target: 2026-07-15) — PARTIAL
 
-- [ ] **P0** Enter sketch mode on a plane/face
-- [ ] **P0** Draw lines
-- [ ] **P0** Draw arcs/circles
-- [ ] **P0** Draw rectangles
+- [x] **P0** Enter sketch mode on a plane/face (auto-detect face on click)
+- [x] **P0** Draw lines (click-chain with closed contour detection)
+- [ ] **P0** Draw arcs/circles (circle entity exists but arc not yet)
+- [x] **P0** Draw rectangles (2-click)
 - [ ] **P1** Dimension constraints
 - [ ] **P1** Coincident/parallel/perpendicular constraints
 - [ ] **P1** Constraint solver (geometric)

@@ -64,14 +64,18 @@ impl App {
         // Extrude
         if let Some(distance) = self.ui.extrude_request.take() {
             self.history.save_state(&renderer.mesh);
-            renderer.extrude_selected(distance);
+            if renderer.extrude_selected(distance).is_some() {
+                self.ui.toasts.push(crate::ui::Toast::new(format!("Extruded {:.2}m", distance)));
+            }
             renderer.clear_preview();
         }
 
         // Cut
         if let Some(depth) = self.ui.cut_request.take() {
             self.history.save_state(&renderer.mesh);
-            renderer.cut_selected(depth);
+            if renderer.cut_selected(depth).is_some() {
+                self.ui.toasts.push(crate::ui::Toast::new(format!("Cut {:.2}m", depth)));
+            }
             renderer.clear_preview();
         }
 
@@ -83,15 +87,17 @@ impl App {
                     renderer.selected_face = Some(inner);
                     renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
                     renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(inner));
+                    self.ui.toasts.push(crate::ui::Toast::new(format!("Inset {:.2}m", amount)));
                 }
             }
         }
 
-        // Preview (extrude or cut)
+        // Preview (extrude, cut, or inset)
         if renderer.selected_face.is_some() {
             match self.ui.active_tool {
                 Tool::Extrude => renderer.update_extrude_preview(self.ui.extrude_distance),
                 Tool::Cut => renderer.update_cut_preview(self.ui.cut_depth),
+                Tool::Inset => renderer.update_inset_preview(self.ui.inset_amount),
                 _ => renderer.clear_preview(),
             }
         } else {
@@ -143,10 +149,46 @@ impl App {
             renderer.set_view(yaw, pitch);
         }
 
+        // Hover pre-highlight (only when not dragging and not over egui)
+        if !self.input.middle_pressed && !self.input.left_pressed && !self.egui_ctx.wants_pointer_input() {
+            renderer.update_hover(
+                self.input.cursor_pos.0 as f32,
+                self.input.cursor_pos.1 as f32,
+            );
+        }
+
         // Mesh stats
         self.ui.mesh_faces = renderer.mesh.face_count();
         self.ui.mesh_verts = renderer.mesh.vertex_count();
         self.ui.mesh_tris = renderer.mesh.triangle_count();
+
+        // Selected face info for status bar
+        if let Some(fid) = renderer.selected_face {
+            self.ui.selected_face_id = Some(fid);
+            self.ui.selected_face_normal = renderer.mesh.face_normal(fid).map(|n| n.into());
+            self.ui.selected_face_area = Some(renderer.mesh.face_area(fid));
+        } else {
+            self.ui.selected_face_id = None;
+            self.ui.selected_face_normal = None;
+            self.ui.selected_face_area = None;
+        }
+
+        // Cursor world position (intersect ray with XZ plane at y=0)
+        let (ray_o, ray_d) = renderer.screen_to_ray(
+            self.input.cursor_pos.0 as f32,
+            self.input.cursor_pos.1 as f32,
+        );
+        if ray_d.y.abs() > 1e-6 {
+            let t = -ray_o.y / ray_d.y;
+            if t > 0.0 && t < 1000.0 {
+                let p = ray_o + ray_d * t;
+                self.ui.cursor_world = Some([p.x, p.y, p.z]);
+            } else {
+                self.ui.cursor_world = None;
+            }
+        } else {
+            self.ui.cursor_world = None;
+        }
     }
 
     fn open_file_dialog(&mut self) {
@@ -162,11 +204,15 @@ impl App {
                     if let Some(r) = &mut self.renderer {
                         self.history.save_state(&r.mesh);
                         r.load_mesh(mesh);
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        let tris = r.mesh.triangle_count();
+                        self.ui.toasts.push(crate::ui::Toast::new(
+                            format!("Imported {} ({} triangles)", name, tris),
+                        ));
                     }
-                    log::info!("Imported: {}", path.display());
                 }
                 Err(e) => {
-                    log::error!("Import failed: {}", e);
+                    self.ui.toasts.push(crate::ui::Toast::new(format!("Import failed: {}", e)));
                 }
             }
         }
@@ -209,11 +255,15 @@ impl ApplicationHandler for App {
                         if let Some(r) = &mut self.renderer {
                             self.history.save_state(&r.mesh);
                             r.load_mesh(mesh);
+                            let name = path.file_name().unwrap_or_default().to_string_lossy();
+                            let tris = r.mesh.triangle_count();
+                            self.ui.toasts.push(crate::ui::Toast::new(
+                                format!("Imported {} ({} tris)", name, tris),
+                            ));
                         }
-                        log::info!("Imported (drag-and-drop): {}", path.display());
                     }
                     Err(e) => {
-                        log::error!("Import failed: {}", e);
+                        self.ui.toasts.push(crate::ui::Toast::new(format!("Import failed: {}", e)));
                     }
                 }
             }
@@ -234,6 +284,7 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(r) = &mut self.renderer {
+                    r.update(); // advance camera animation
                     r.render(full_output.textures_delta, primitives, screen);
                 }
                 window.request_redraw();

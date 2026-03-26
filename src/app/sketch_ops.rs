@@ -130,8 +130,8 @@ impl App {
                     }
                 }
 
-                for idx in start_idx..entities.len() {
-                    if let crate::sketch::SketchEntity::Line { start, end } = &entities[idx] {
+                for entity in &entities[start_idx..] {
+                    if let crate::sketch::SketchEntity::Line { start, end } = entity {
                         if contour_points.is_empty() || start.distance_to(*contour_points.last().unwrap()) > 0.01 {
                             contour_points.push(*start);
                         }

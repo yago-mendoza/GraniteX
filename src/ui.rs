@@ -1,5 +1,3 @@
-use egui;
-
 #[derive(PartialEq, Clone, Copy)]
 pub enum Tool {
     Select,
@@ -51,6 +49,12 @@ pub struct UiState {
     pub mesh_tris: usize,
     pub sketch_entity_count: usize,
     pub wireframe_supported: bool,
+    // Status bar info (updated per-frame)
+    pub cursor_world: Option<[f32; 3]>,
+    pub selected_face_id: Option<u32>,
+    pub selected_face_normal: Option<[f32; 3]>,
+    pub selected_face_area: Option<f32>,
+    pub toasts: Vec<Toast>,
 }
 
 pub struct ChatMessage {
@@ -61,6 +65,32 @@ pub struct ChatMessage {
 pub enum Sender {
     User,
     Agent,
+}
+
+pub struct Toast {
+    pub text: String,
+    pub created: std::time::Instant,
+    pub duration_secs: f32,
+}
+
+impl Toast {
+    pub fn new(text: String) -> Self {
+        Self { text, created: std::time::Instant::now(), duration_secs: 3.0 }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.created.elapsed().as_secs_f32() > self.duration_secs
+    }
+
+    pub fn alpha(&self) -> f32 {
+        let elapsed = self.created.elapsed().as_secs_f32();
+        let fade_start = self.duration_secs - 0.5;
+        if elapsed > fade_start {
+            1.0 - ((elapsed - fade_start) / 0.5).min(1.0)
+        } else {
+            1.0
+        }
+    }
 }
 
 impl UiState {
@@ -91,6 +121,11 @@ impl UiState {
             mesh_tris: 12,
             sketch_entity_count: 0,
             wireframe_supported: false,
+            cursor_world: None,
+            selected_face_id: None,
+            selected_face_normal: None,
+            selected_face_area: None,
+            toasts: Vec::new(),
         }
     }
 
@@ -101,6 +136,7 @@ impl UiState {
         if self.show_chat {
             self.draw_chat_panel(ctx);
         }
+        self.draw_toasts(ctx);
     }
 
     fn draw_top_toolbar(&mut self, ctx: &egui::Context) {
@@ -363,14 +399,65 @@ impl UiState {
             .exact_height(20.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(egui::RichText::new("Ready").weak().size(10.0));
+                    // Active tool
+                    let tool_name = match self.active_tool {
+                        Tool::Select => "Select", Tool::Extrude => "Extrude",
+                        Tool::Cut => "Cut", Tool::Inset => "Inset",
+                        Tool::Fillet => "Fillet", Tool::Line => "Line",
+                        Tool::Rect => "Rect", Tool::Circle => "Circle",
+                    };
+                    ui.label(egui::RichText::new(tool_name).strong().size(10.0));
                     ui.separator();
+
+                    // Mesh stats
                     ui.label(egui::RichText::new(format!("F:{} V:{} T:{}", self.mesh_faces, self.mesh_verts, self.mesh_tris)).weak().size(10.0));
-                    if let Some(ref feat) = self.selected_feature {
+
+                    // Selected face info
+                    if let Some(fid) = self.selected_face_id {
                         ui.separator();
-                        ui.label(egui::RichText::new(format!("Selected: {}", feat)).size(10.0).color(egui::Color32::from_rgb(100, 160, 255)));
+                        let mut info = format!("Face {}", fid);
+                        if let Some(n) = self.selected_face_normal {
+                            info += &format!("  N:({:.2},{:.2},{:.2})", n[0], n[1], n[2]);
+                        }
+                        if let Some(a) = self.selected_face_area {
+                            info += &format!("  A:{:.4}", a);
+                        }
+                        ui.label(egui::RichText::new(info).size(10.0).color(egui::Color32::from_rgb(100, 160, 255)));
+                    }
+
+                    // Cursor 3D position
+                    if let Some(pos) = self.cursor_world {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(format!("({:.3}, {:.3}, {:.3})", pos[0], pos[1], pos[2])).weak().size(10.0));
+                        });
                     }
                 });
             });
+    }
+
+    fn draw_toasts(&mut self, ctx: &egui::Context) {
+        self.toasts.retain(|t| !t.is_expired());
+
+        let screen = ctx.screen_rect();
+        let mut y = screen.max.y - 40.0;
+
+        for toast in self.toasts.iter().rev().take(3) {
+            let alpha = (toast.alpha() * 255.0) as u8;
+            let area = egui::Area::new(egui::Id::new(toast.created))
+                .fixed_pos(egui::pos2(screen.max.x - 280.0, y))
+                .order(egui::Order::Foreground);
+
+            area.show(ctx, |ui| {
+                let frame = egui::Frame::popup(ui.style())
+                    .fill(egui::Color32::from_rgba_unmultiplied(30, 30, 35, alpha))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 80, 90, alpha)));
+                frame.show(ui, |ui| {
+                    ui.label(egui::RichText::new(&toast.text)
+                        .size(11.0)
+                        .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, alpha)));
+                });
+            });
+            y -= 30.0;
+        }
     }
 }

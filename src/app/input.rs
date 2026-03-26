@@ -148,6 +148,13 @@ impl App {
                         self.delete_selected_face();
                     }
 
+                    // Home = Zoom to fit (SolidWorks: F key)
+                    Key::Named(NamedKey::Home) => {
+                        if let Some(r) = &mut self.renderer {
+                            r.fit_camera();
+                        }
+                    }
+
                     // --- Tool shortcuts (SolidWorks-style) ---
                     Key::Character(c) if !ctrl => {
                         match c.as_str() {

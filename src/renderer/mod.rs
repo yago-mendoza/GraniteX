@@ -47,6 +47,7 @@ pub struct Renderer {
     pub show_grid: bool,
     pub show_wireframe: bool,
     pub selected_face: Option<u32>,
+    pub hovered_face: Option<u32>,
 }
 
 impl Renderer {
@@ -81,6 +82,7 @@ impl Renderer {
             show_grid: true,
             show_wireframe: false,
             selected_face: None,
+            hovered_face: None,
         }
     }
 
@@ -119,6 +121,13 @@ impl Renderer {
 
     pub fn set_view(&mut self, yaw: f32, pitch: f32) {
         self.camera.set_view(yaw, pitch);
+        // Don't sync yet — animation will sync each frame
+    }
+
+    /// Call once per frame to advance camera animation.
+    pub fn update(&mut self) {
+        let dt = 1.0 / 60.0; // approximate frame time
+        self.camera.update_animation(dt);
         self.sync_camera();
     }
 
@@ -140,6 +149,26 @@ impl Renderer {
         self.mesh_pipeline.set_selected_face(&self.gpu.queue, self.selected_face);
     }
 
+    /// Update hover highlight (face under cursor, no click needed).
+    pub fn update_hover(&mut self, screen_x: f32, screen_y: f32) {
+        let view_proj = self.camera.projection_matrix() * self.camera.view_matrix();
+
+        let result = picking::pick_face(
+            screen_x,
+            screen_y,
+            self.gpu.config.width as f32,
+            self.gpu.config.height as f32,
+            view_proj,
+            &self.mesh,
+        );
+
+        let new_hover = result.map(|r| r.face_id);
+        if new_hover != self.hovered_face {
+            self.hovered_face = new_hover;
+            self.mesh_pipeline.set_hovered_face(&self.gpu.queue, self.hovered_face);
+        }
+    }
+
     // --- Preview ---
 
     /// Update the extrude preview ghost (transparent blue).
@@ -155,6 +184,15 @@ impl Renderer {
     pub fn update_cut_preview(&mut self, depth: f32) {
         if let Some(face_id) = self.selected_face {
             self.preview.set_cut_preview(&self.gpu.device, &self.gpu.queue, &self.mesh, face_id, depth);
+        } else {
+            self.preview.clear();
+        }
+    }
+
+    /// Update the inset preview ghost (transparent teal).
+    pub fn update_inset_preview(&mut self, amount: f32) {
+        if let Some(face_id) = self.selected_face {
+            self.preview.set_inset_preview(&self.gpu.device, &self.gpu.queue, &self.mesh, face_id, amount);
         } else {
             self.preview.clear();
         }
@@ -347,9 +385,12 @@ impl Renderer {
                 self.grid.draw(&mut pass);
             }
             if self.show_wireframe {
+                // Wireframe only mode
                 self.mesh_pipeline.draw_wireframe(&mut pass);
             } else {
+                // SolidWorks style: filled faces + edge overlay
                 self.mesh_pipeline.draw(&mut pass);
+                self.mesh_pipeline.draw_edges(&mut pass);
             }
             self.preview.draw(&mut pass);
             self.sketch_renderer.draw(&mut pass);
