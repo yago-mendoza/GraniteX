@@ -120,16 +120,25 @@ impl App {
             }
             Tool::Rect => {
                 if let Some(start) = sketch.pending_start.take() {
-                    sketch.add_rect(start, pos);
-                    contour_closed = true;
+                    if sketch.add_rect(start, pos) {
+                        contour_closed = true;
+                    } else {
+                        // Restore pending_start so user can try a different corner
+                        sketch.pending_start = Some(start);
+                        self.ui.toasts.push(crate::ui::Toast::new("Rectangle too small".into()));
+                    }
                 } else {
                     sketch.pending_start = Some(pos);
                 }
             }
             Tool::Circle => {
                 if let Some(center) = sketch.pending_start.take() {
-                    sketch.add_circle(center, center.distance_to(pos));
-                    contour_closed = true;
+                    if sketch.add_circle(center, center.distance_to(pos)) {
+                        contour_closed = true;
+                    } else {
+                        sketch.pending_start = Some(center);
+                        self.ui.toasts.push(crate::ui::Toast::new("Circle too small".into()));
+                    }
                 } else {
                     sketch.pending_start = Some(pos);
                 }
@@ -162,6 +171,10 @@ impl App {
                 self.ui.toasts.push(crate::ui::Toast::new(
                     format!("{} regions — click inside one to select", n)
                 ));
+            } else {
+                // n == 0: contour closed but no valid regions (degenerate geometry)
+                self.ui.toasts.push(crate::ui::Toast::new("No valid regions found".into()));
+                // Keep current drawing tool so user can retry
             }
         }
     }

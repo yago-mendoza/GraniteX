@@ -41,10 +41,10 @@ pub fn pick_face(
     let indices = &mesh.indices;
     let verts = &mesh.vertices;
 
-    for tri_start in (0..indices.len()).step_by(3) {
-        let i0 = indices[tri_start] as usize;
-        let i1 = indices[tri_start + 1] as usize;
-        let i2 = indices[tri_start + 2] as usize;
+    for tri in indices.chunks_exact(3) {
+        let i0 = tri[0] as usize;
+        let i1 = tri[1] as usize;
+        let i2 = tri[2] as usize;
 
         let v0 = Vec3::from(verts[i0].position);
         let v1 = Vec3::from(verts[i1].position);

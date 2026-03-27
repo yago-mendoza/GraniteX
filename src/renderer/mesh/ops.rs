@@ -18,7 +18,7 @@ impl Mesh {
 
         // Save original triangles, then remove them from the index buffer.
         // We'll re-add them as cap triangles after moving the vertices.
-        let cap_tris: Vec<[u32; 3]> = self.indices.chunks(3)
+        let cap_tris: Vec<[u32; 3]> = self.indices.chunks_exact(3)
             .filter(|c| self.vertices[c[0] as usize].face_id == face_id)
             .map(|c| [c[0], c[1], c[2]])
             .collect();
@@ -112,7 +112,7 @@ impl Mesh {
         let radial_normals: Vec<Vec3> = if cylinder_face_id.is_some() {
             old_positions.iter().map(|p| {
                 let pos = Vec3::from(*p);
-                let radial = (pos - center - face_normal * (pos - center).dot(face_normal)).normalize();
+                let radial = (pos - center - face_normal * (pos - center).dot(face_normal)).normalize_or_zero();
                 if reverse { -radial } else { radial }
             }).collect()
         } else {
@@ -148,7 +148,7 @@ impl Mesh {
             } else {
                 let edge_h = Vec3::from(top0) - Vec3::from(bottom0);
                 let edge_w = Vec3::from(bottom1) - Vec3::from(bottom0);
-                let side_normal = edge_w.cross(edge_h).normalize();
+                let side_normal = edge_w.cross(edge_h).normalize_or_zero();
 
                 let side_face_id = self
                     .find_coplanar_adjacent_face(side_normal, &side_positions)
@@ -180,7 +180,7 @@ impl Mesh {
         let old_positions: Vec<[f32; 3]> = corners.iter().map(|c| (*c).into()).collect();
 
         // Save original triangles, then remove from index buffer
-        let floor_tris: Vec<[u32; 3]> = self.indices.chunks(3)
+        let floor_tris: Vec<[u32; 3]> = self.indices.chunks_exact(3)
             .filter(|c| self.vertices[c[0] as usize].face_id == face_id)
             .map(|c| [c[0], c[1], c[2]])
             .collect();
@@ -241,7 +241,7 @@ impl Mesh {
         self.stored_boundaries.remove(&face_id);
         self.stored_holes.remove(&face_id);
         let mut new_indices: Vec<u32> = Vec::new();
-        for chunk in self.indices.chunks(3) {
+        for chunk in self.indices.chunks_exact(3) {
             if self.vertices[chunk[0] as usize].face_id != face_id {
                 new_indices.extend_from_slice(chunk);
             }
@@ -435,7 +435,7 @@ impl Mesh {
     /// Remove all triangles of a face from the index buffer WITHOUT compacting vertices.
     fn remove_face_indices(&mut self, face_id: u32) {
         let mut new_indices = Vec::with_capacity(self.indices.len());
-        for chunk in self.indices.chunks(3) {
+        for chunk in self.indices.chunks_exact(3) {
             if chunk.len() == 3 && self.vertices[chunk[0] as usize].face_id != face_id {
                 new_indices.extend_from_slice(chunk);
             }
@@ -459,5 +459,93 @@ impl Mesh {
         self.indices.push(base);
         self.indices.push(base + 2);
         self.indices.push(base + 3);
+    }
+
+    // --- Translate operations ---
+
+    /// Translate all vertices belonging to a face by a delta vector.
+    /// This moves the face in world space without changing its shape.
+    #[allow(dead_code)]
+    pub fn translate_face(&mut self, face_id: u32, delta: Vec3) {
+        for v in &mut self.vertices {
+            if v.face_id == face_id {
+                let pos = Vec3::from(v.position) + delta;
+                v.position = pos.into();
+            }
+        }
+
+        if let Some(boundary) = self.stored_boundaries.get_mut(&face_id) {
+            for p in boundary.iter_mut() {
+                *p += delta;
+            }
+        }
+
+        if let Some(holes) = self.stored_holes.get_mut(&face_id) {
+            for hole in holes.iter_mut() {
+                for p in hole.iter_mut() {
+                    *p += delta;
+                }
+            }
+        }
+    }
+
+    /// Translate multiple faces by the same delta.
+    /// More efficient than calling translate_face in a loop (single pass over vertices).
+    #[allow(dead_code)]
+    pub fn translate_faces(&mut self, face_ids: &[u32], delta: Vec3) {
+        let id_set: std::collections::HashSet<u32> = face_ids.iter().copied().collect();
+
+        for v in &mut self.vertices {
+            if id_set.contains(&v.face_id) {
+                let pos = Vec3::from(v.position) + delta;
+                v.position = pos.into();
+            }
+        }
+
+        for &fid in face_ids {
+            if let Some(boundary) = self.stored_boundaries.get_mut(&fid) {
+                for p in boundary.iter_mut() {
+                    *p += delta;
+                }
+            }
+
+            if let Some(holes) = self.stored_holes.get_mut(&fid) {
+                for hole in holes.iter_mut() {
+                    for p in hole.iter_mut() {
+                        *p += delta;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compute the centroid (center point) of a face.
+    /// Returns the average position of all vertices belonging to this face.
+    #[allow(dead_code)]
+    pub fn face_centroid(&self, face_id: u32) -> Option<Vec3> {
+        let mut sum = Vec3::ZERO;
+        let mut count = 0u32;
+        for v in &self.vertices {
+            if v.face_id == face_id {
+                sum += Vec3::from(v.position);
+                count += 1;
+            }
+        }
+        if count == 0 { None } else { Some(sum / count as f32) }
+    }
+
+    /// Compute the centroid of multiple faces.
+    #[allow(dead_code)]
+    pub fn faces_centroid(&self, face_ids: &[u32]) -> Option<Vec3> {
+        let id_set: std::collections::HashSet<u32> = face_ids.iter().copied().collect();
+        let mut sum = Vec3::ZERO;
+        let mut count = 0u32;
+        for v in &self.vertices {
+            if id_set.contains(&v.face_id) {
+                sum += Vec3::from(v.position);
+                count += 1;
+            }
+        }
+        if count == 0 { None } else { Some(sum / count as f32) }
     }
 }

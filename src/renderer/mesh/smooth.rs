@@ -77,7 +77,7 @@ impl Mesh {
         let tri_count = self.indices.len() / 3;
 
         // --- Phase 1: Per-triangle geometric normals ---
-        let tri_normals: Vec<Vec3> = self.indices.chunks(3).map(|tri| {
+        let tri_normals: Vec<Vec3> = self.indices.chunks_exact(3).map(|tri| {
             let p0 = Vec3::from(self.vertices[tri[0] as usize].position);
             let p1 = Vec3::from(self.vertices[tri[1] as usize].position);
             let p2 = Vec3::from(self.vertices[tri[2] as usize].position);
@@ -86,7 +86,7 @@ impl Mesh {
 
         // --- Phase 2: Face merging via edge adjacency + union-find ---
         let mut edge_adj: HashMap<(PosKey, PosKey), Vec<usize>> = HashMap::new();
-        for (ti, tri) in self.indices.chunks(3).enumerate() {
+        for (ti, tri) in self.indices.chunks_exact(3).enumerate() {
             let k = [
                 quantize_pos(self.vertices[tri[0] as usize].position),
                 quantize_pos(self.vertices[tri[1] as usize].position),
@@ -123,7 +123,7 @@ impl Mesh {
             })
         }).collect();
 
-        for (ti, tri) in self.indices.chunks(3).enumerate() {
+        for (ti, tri) in self.indices.chunks_exact(3).enumerate() {
             let fid = tri_face_ids[ti];
             for &vi in tri {
                 self.vertices[vi as usize].face_id = fid;
@@ -134,7 +134,7 @@ impl Mesh {
         // --- Phase 3: Smooth normals ---
         // Build position -> adjacent triangles map
         let mut pos_to_tris: HashMap<PosKey, Vec<usize>> = HashMap::new();
-        for (ti, tri) in self.indices.chunks(3).enumerate() {
+        for (ti, tri) in self.indices.chunks_exact(3).enumerate() {
             for &vi in tri {
                 let key = quantize_pos(self.vertices[vi as usize].position);
                 pos_to_tris.entry(key).or_default().push(ti);
@@ -146,7 +146,7 @@ impl Mesh {
         }
 
         // Average normals of adjacent triangles within crease angle
-        for (ti, tri) in self.indices.chunks(3).enumerate() {
+        for (ti, tri) in self.indices.chunks_exact(3).enumerate() {
             let my_n = tri_normals[ti];
             if my_n == Vec3::ZERO { continue; }
 

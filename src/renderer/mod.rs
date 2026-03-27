@@ -15,6 +15,8 @@ pub mod vertex;
 mod camera;
 mod grid;
 mod gizmo;
+#[allow(dead_code)]
+pub(crate) mod transform_gizmo;
 pub mod mesh;
 mod preview;
 mod sketch_renderer;

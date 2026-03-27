@@ -60,6 +60,7 @@ impl SketchEntity {
     }
 
     /// Minimum distance from a 2D point to this entity.
+    #[allow(dead_code)]
     pub fn distance_to_point(&self, p: Point2D) -> f32 {
         match self {
             SketchEntity::Line { start, end }

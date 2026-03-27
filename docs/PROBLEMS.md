@@ -12,6 +12,33 @@ Last updated: 2026-03-27 (reviewed Session 12 — no new problems)
 **Architecture:** Kernel behind a trait boundary so it can be swapped in the future. Current triangle mesh becomes display-only tessellation. See RESEARCH.md for full evaluation.
 **Short-term mitigation:** `stored_boundaries` HashMap tracks face ordering. `triangulate_3d_polygon` uses earcutr. `split_parent_face` uses geo boolean operations. These work for 90% of cases.
 
+## Fixed Issues (2026-03-27 Robustness Hardening)
+
+### PROB-022: contour_closed fires before entity validation
+**Status:** FIXED (2026-03-27)
+**Description:** Rect/Circle tools set `contour_closed=true` BEFORE `add_rect`/`add_circle` validated the entity. User saw "ready to extrude" toast but nothing was created. `pending_start` was consumed by `.take()`, stranding the user.
+**Resolution:** `add_rect`/`add_circle` return bool. `contour_closed` only set on success. `pending_start` restored on failure with error toast.
+
+### PROB-023: add_rect never called mark_dirty
+**Status:** FIXED (2026-03-27)
+**Description:** `add_rect` pushed 4 Line entities but never called `region_solver.mark_dirty()`. Region computation stale for rects unless caller happened to mark dirty.
+**Resolution:** `add_rect` now calls `mark_dirty()` unconditionally.
+
+### PROB-024: Failed extrude/cut pushes undo snapshot
+**Status:** FIXED (2026-03-27)
+**Description:** `save_state` was called before validating the target. Failed operations pushed a useless snapshot and nuked the redo stack. Also, sketch-based extrude created a base face that was never cleaned up on failure.
+**Resolution:** `save_state` moved after target validation. Failed ops roll back via `history.undo()`. Failure toast added.
+
+### PROB-025: operation_dragging leaks across tool switches
+**Status:** FIXED (2026-03-27)
+**Description:** Pressing tool shortcut keys during drag-to-extrude/cut didn't cancel the drag. Mouse release on wrong tool could fire stale operation.
+**Resolution:** Tool switch clears drag state. Keyboard blocked during drag (except Esc). Right-click cancels drag.
+
+### PROB-026: Sketch not invalidated on mesh undo
+**Status:** FIXED (2026-03-27)
+**Description:** Mesh undo could remove the face the sketch was bound to. Sketch held stale `face_id` and `face_boundary_2d`.
+**Resolution:** After mesh undo/redo, check if sketch's `face_id` still exists. Destroy sketch only if face is gone (not blanket invalidation).
+
 ## Fixed Issues (2026-03-27 Deep Audit)
 
 ### PROB-015: Sketch undo desyncs chain state

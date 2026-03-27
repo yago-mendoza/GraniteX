@@ -99,7 +99,19 @@ impl App {
                     }
                     MouseButton::Right => {
                         if !pressed {
-                            if self.is_drawing_tool() {
+                            // Cancel drag-to-extrude/cut on right-click
+                            if self.input.operation_dragging {
+                                self.input.operation_dragging = false;
+                                self.input.drag_accumulated = 0.0;
+                                self.input.left_pressed = false;
+                                self.input.left_was_drag = false;
+                                // Restore slider to original value (0 = no operation)
+                                match self.ui.active_tool {
+                                    Tool::Extrude => self.ui.extrude_distance = 0.0,
+                                    Tool::Cut => self.ui.cut_depth = 0.0,
+                                    _ => {}
+                                }
+                            } else if self.is_drawing_tool() {
                                 // In drawing mode: right-click cancels
                                 if let Some(sketch) = &mut self.sketch {
                                     if sketch.pending_start.is_some() {
@@ -200,6 +212,13 @@ impl App {
             if key_event.state == ElementState::Pressed {
                 use winit::keyboard::{Key, NamedKey};
 
+                // Block tool shortcuts during drag-to-extrude/cut (except Escape)
+                if self.input.operation_dragging {
+                    if !matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
+                        return;
+                    }
+                }
+
                 let ctrl = self.input.modifiers.control_key();
 
                 match &key_event.logical_key {
@@ -234,6 +253,14 @@ impl App {
                         if let Some(r) = &mut self.renderer {
                             if self.history.undo(&mut r.mesh) {
                                 r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);
+                                // Invalidate sketch if its parent face no longer exists
+                                if let Some(sketch) = &self.sketch {
+                                    if let Some(fid) = sketch.face_id {
+                                        if r.mesh.face_normal(fid).is_none() {
+                                            self.sketch = None;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -243,6 +270,13 @@ impl App {
                         if let Some(r) = &mut self.renderer {
                             if self.history.redo(&mut r.mesh) {
                                 r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);
+                                if let Some(sketch) = &self.sketch {
+                                    if let Some(fid) = sketch.face_id {
+                                        if r.mesh.face_normal(fid).is_none() {
+                                            self.sketch = None;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -250,6 +284,13 @@ impl App {
                         if let Some(r) = &mut self.renderer {
                             if self.history.redo(&mut r.mesh) {
                                 r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);
+                                if let Some(sketch) = &self.sketch {
+                                    if let Some(fid) = sketch.face_id {
+                                        if r.mesh.face_normal(fid).is_none() {
+                                            self.sketch = None;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -288,7 +329,11 @@ impl App {
                             }
                         }
                         if !handled {
-                            self.delete_selected_face();
+                            if self.ui.selection_mode == SelectionMode::Edge {
+                                self.ui.toasts.push(crate::ui::Toast::new("Edge deletion not supported".into()));
+                            } else {
+                                self.delete_selected_face();
+                            }
                         }
                     }
 
@@ -332,7 +377,17 @@ impl App {
                         }
                         // Clean up state when switching away from tools
                         if prev_tool != self.ui.active_tool {
+                            // Cancel any drag-to-extrude/cut in progress
                             self.input.operation_dragging = false;
+                            self.input.drag_accumulated = 0.0;
+                            // Clear sketch pending state when leaving a drawing tool
+                            let was_drawing = matches!(prev_tool, Tool::Line | Tool::Rect | Tool::Circle | Tool::CLine);
+                            let now_drawing = matches!(self.ui.active_tool, Tool::Line | Tool::Rect | Tool::Circle | Tool::CLine);
+                            if was_drawing && !now_drawing {
+                                if let Some(sketch) = &mut self.sketch {
+                                    sketch.cancel_pending();
+                                }
+                            }
                             if prev_tool == Tool::Measure {
                                 self.ui.measure_first_point = None;
                             }

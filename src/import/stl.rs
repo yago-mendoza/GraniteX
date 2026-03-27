@@ -30,7 +30,9 @@ fn parse_binary(data: &[u8]) -> Result<Mesh, ImportError> {
     }
 
     let tri_count = u32::from_le_bytes([data[80], data[81], data[82], data[83]]) as usize;
-    let expected = 84 + tri_count * 50;
+    let expected = tri_count.checked_mul(50)
+        .and_then(|v| v.checked_add(84))
+        .ok_or_else(|| ImportError::Parse("STL triangle count overflow".into()))?;
     if data.len() < expected {
         return Err(ImportError::Parse(format!(
             "Binary STL truncated: expected {} bytes, got {}", expected, data.len()

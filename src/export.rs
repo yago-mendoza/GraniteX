@@ -16,10 +16,13 @@ pub fn export_stl(mesh: &Mesh, path: &Path) -> anyhow::Result<()> {
     let tri_count = (mesh.indices.len() / 3) as u32;
     file.write_all(&tri_count.to_le_bytes())?;
 
+    let vlen = mesh.vertices.len();
     for tri in mesh.indices.chunks_exact(3) {
-        let v0 = glam::Vec3::from(mesh.vertices[tri[0] as usize].position);
-        let v1 = glam::Vec3::from(mesh.vertices[tri[1] as usize].position);
-        let v2 = glam::Vec3::from(mesh.vertices[tri[2] as usize].position);
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        if i0 >= vlen || i1 >= vlen || i2 >= vlen { continue; }
+        let v0 = glam::Vec3::from(mesh.vertices[i0].position);
+        let v1 = glam::Vec3::from(mesh.vertices[i1].position);
+        let v2 = glam::Vec3::from(mesh.vertices[i2].position);
 
         let normal = (v1 - v0).cross(v2 - v0).normalize_or_zero();
 
@@ -54,7 +57,9 @@ pub fn export_obj(mesh: &Mesh, path: &Path) -> anyhow::Result<()> {
     }
 
     // Write faces (OBJ is 1-indexed)
+    let vlen = mesh.vertices.len() as u32;
     for tri in mesh.indices.chunks_exact(3) {
+        if tri[0] >= vlen || tri[1] >= vlen || tri[2] >= vlen { continue; }
         let i0 = tri[0] + 1;
         let i1 = tri[1] + 1;
         let i2 = tri[2] + 1;

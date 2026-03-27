@@ -38,11 +38,13 @@ pub struct SketchRegion {
     /// Triangulated indices (for rendering). Indexes into all_vertices() (boundary + holes).
     pub triangles: Vec<[usize; 3]>,
     /// Region area.
+    #[allow(dead_code)]
     pub area: f64,
 }
 
 impl SketchRegion {
     /// All vertices: boundary followed by hole vertices (for triangulation indexing).
+    #[allow(dead_code)]
     pub fn all_vertices(&self) -> Vec<Point2D> {
         let mut v = self.boundary.clone();
         for hole in &self.holes {

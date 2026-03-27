@@ -4,6 +4,7 @@ pub enum Tool {
     Extrude,
     Cut,
     Inset,
+    #[allow(dead_code)]
     Fillet,
     Line,
     Rect,
@@ -68,6 +69,8 @@ pub struct UiState {
     // Selection mode
     pub selection_mode: SelectionMode,
     pub selected_edge: Option<([f32; 3], [f32; 3])>,
+    // Dirty (unsaved changes) indicator
+    pub dirty: bool,
     pub chat_input: String,
     pub chat_history: Vec<ChatMessage>,
     pub selected_feature: Option<String>,
@@ -169,6 +172,7 @@ impl UiState {
             active_measurement: None,
             selection_mode: SelectionMode::Face,
             selected_edge: None,
+            dirty: false,
             chat_input: String::new(),
             chat_history: vec![
                 ChatMessage {
@@ -220,7 +224,8 @@ impl UiState {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
 
-                    ui.label(egui::RichText::new("GraniteX").strong().size(13.0));
+                    let title = if self.dirty { "GraniteX *" } else { "GraniteX" };
+                    ui.label(egui::RichText::new(title).strong().size(13.0));
                     ui.separator();
 
                     // File operations
@@ -414,7 +419,7 @@ impl UiState {
                     .default_open(true)
                     .show(ui, |ui| {
                         ui.label(egui::RichText::new("  Cube (base)").size(10.0).weak());
-                        for (i, op) in self.operation_history.iter().enumerate() {
+                        for (_i, op) in self.operation_history.iter().enumerate() {
                             let icon = if op.starts_with("Extrude") { "+" }
                                 else if op.starts_with("Cut") { "-" }
                                 else if op.starts_with("Inset") { ">" }

@@ -36,3 +36,15 @@ CADmium was a Rust CAD project that tried to build on the `truck` crate. It was 
 ## L-006: Winding order is easy to get wrong in cube definitions (2026-03-27)
 
 When defining cube indices manually, it's easy to accidentally flip the winding on some faces. The cross product `(v1-v0) × (v2-v0)` should give the outward normal for every face. In our cube, the top and bottom faces had inverted winding — the cross product pointed inward. This was masked by `cull_mode: None` and `abs()` lighting, but would break any operation that relies on correct normals.
+
+## L-007: JSON is fine for CAD project files at this stage (2026-03-27)
+
+The .gnx save format uses JSON (via serde_json) rather than a binary format. For the current mesh complexity this is perfectly adequate — file sizes are small and human-readable for debugging. Binary formats (bincode, messagepack) can be swapped in later behind the same serde traits if file size becomes an issue with complex models. The key decision was making the format self-describing and versionable from day one.
+
+## L-008: Edge picking needs screen-space distance, not raycast (2026-03-27)
+
+Face picking uses ray-triangle intersection (world space), but edge picking requires a different approach: project edge endpoints to screen space, then compute the 2D distance from the mouse cursor to the line segment. This is because edges have zero area — a ray will almost never intersect one. The screen-space approach also naturally handles the "close enough" threshold in pixels, which feels consistent regardless of zoom level.
+
+## L-009: Selection mode state machines get complex fast (2026-03-27)
+
+Adding edge selection alongside face selection introduced a mode toggle (Tab key) with different behaviors per mode: face mode does face raycast + highlight, edge mode does edge proximity + length display. Multi-select (Shift+click) adds another axis. The interaction matrix grows as modes × modifiers × actions. Keeping this organized requires clear state enums and routing input through them early, before it becomes spaghetti.

@@ -17,6 +17,7 @@ pub struct GpuVertex {
 }
 
 /// Tessellation output: vertex buffer + index buffer.
+#[allow(dead_code)]
 pub struct TessellatedMesh {
     pub vertices: Vec<GpuVertex>,
     pub indices: Vec<u32>,
@@ -24,6 +25,7 @@ pub struct TessellatedMesh {
     pub face_id_map: Vec<FaceId>,
 }
 
+#[allow(dead_code)]
 impl BrepMesh {
     /// Convert the entire mesh to GPU buffers for rendering.
     pub fn tessellate(&self) -> TessellatedMesh {
@@ -73,6 +75,7 @@ impl BrepMesh {
 }
 
 /// Triangulate a single face polygon.
+#[allow(dead_code)]
 fn triangulate_face(positions: &[Vec3], normal: Vec3) -> Vec<[usize; 3]> {
     let n = positions.len();
     if n < 3 { return Vec::new(); }

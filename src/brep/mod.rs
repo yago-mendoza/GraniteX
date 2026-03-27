@@ -16,6 +16,7 @@ new_key_type! {
     pub struct FaceId;
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct HVertex {
     pub position: Vec3,
@@ -23,6 +24,7 @@ pub struct HVertex {
     pub halfedge: Option<HalfEdgeId>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct HalfEdge {
     /// The vertex this half-edge POINTS TO.
@@ -36,6 +38,7 @@ pub struct HalfEdge {
     pub face: Option<FaceId>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct HFace {
     /// One half-edge on this face's boundary.
@@ -45,6 +48,7 @@ pub struct HFace {
 }
 
 /// Half-edge mesh with explicit topology.
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct BrepMesh {
     pub vertices: SlotMap<VertexId, HVertex>,
@@ -52,6 +56,7 @@ pub struct BrepMesh {
     pub faces: SlotMap<FaceId, HFace>,
 }
 
+#[allow(dead_code)]
 impl BrepMesh {
     pub fn new() -> Self {
         Self {

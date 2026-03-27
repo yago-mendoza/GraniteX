@@ -1,5 +1,28 @@
 # GraniteX — Changelog
 
+## 2026-03-27 — Robustness Hardening (3-Batch Plan)
+
+Root cause principle: "validate fully before mutating state." Applied across sketch, extrude, and input systems.
+
+### Batch 1: Sketch-to-Extrude Pipeline
+- **FIX**: `add_rect` now returns bool + calls `mark_dirty()` (was silently skipping region updates)
+- **FIX**: `add_circle` now returns bool for validation
+- **FIX**: `contour_closed` only set if entity creation succeeded (was firing before validation, causing "ready to extrude" with nothing to extrude)
+- **FIX**: `pending_start` restored on Rect/Circle rejection (user can retry, not stranded)
+- **FIX**: Toast shown when zero regions computed after contour close
+- **FIX**: Extrude/cut failure now shows toast instead of silent nothing
+- **FIX**: `save_state` moved AFTER confirming valid target (failed ops no longer push useless undo snapshots or nuke redo stack)
+- **FIX**: Orphaned base face cleaned up on extrude/cut failure via undo rollback
+
+### Batch 2: State Transition Guards
+- **FIX**: Tool switch clears `operation_dragging` + `drag_accumulated` + sketch pending state
+- **FIX**: Right-click cancels drag-to-extrude/cut (resets all drag state + slider)
+- **FIX**: Keyboard shortcuts blocked during drag (except Escape)
+- **FIX**: New scene clears ALL input state (operation_dragging, drag_accumulated, left_pressed)
+
+### Batch 3: Conditional Sketch Invalidation
+- **FIX**: Mesh undo/redo conditionally invalidates sketch — only if sketch's parent face no longer exists in mesh (not blanket destruction)
+
 ## 2026-03-27 — Deep Audit: 7 Critical Bugs Fixed
 
 Traced every user workflow path end-to-end. Found and fixed 7 logic bugs, ranging from geometry corruption to silent input rejection.

@@ -238,6 +238,7 @@ impl Sketch {
     }
 
     /// Select the nearest entity within threshold. Returns true if found.
+    #[allow(dead_code)]
     pub fn select_entity_near(&mut self, pos: Point2D, threshold: f32) -> bool {
         let mut best: Option<(usize, f32)> = None;
         for (i, entity) in self.entities.iter().enumerate() {
@@ -347,7 +348,7 @@ impl Sketch {
     pub fn snap_to_target(&self, pos: Point2D, threshold: f32) -> Option<SnapTarget> {
         let mut best: Option<(f32, SnapTarget)> = None;
 
-        let mut consider = |best: &mut Option<(f32, SnapTarget)>, dist: f32, target: SnapTarget| {
+        let consider = |best: &mut Option<(f32, SnapTarget)>, dist: f32, target: SnapTarget| {
             if dist < threshold && (best.is_none() || dist < best.unwrap().0) {
                 *best = Some((dist, target));
             }

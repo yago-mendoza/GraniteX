@@ -19,7 +19,7 @@ pub(crate) const EDGE_EPSILON: f32 = 1e-4;
 /// Returns triangle indices into the input points array.
 /// Falls back to fan triangulation for convex-only if earcutr fails.
 pub fn triangulate_3d_polygon(points: &[Vec3], normal: Vec3) -> Vec<[usize; 3]> {
-    if points.len() < 3 { return Vec::new(); }
+    if points.len() < 3 || normal.length_squared() < 1e-10 { return Vec::new(); }
 
     // Build 2D projection axes on the polygon plane
     let u_axis = if normal.dot(Vec3::Y).abs() < 0.99 {
@@ -55,7 +55,7 @@ pub fn triangulate_3d_polygon(points: &[Vec3], normal: Vec3) -> Vec<[usize; 3]> 
 
 /// Triangulate a 3D polygon with holes by projecting to 2D.
 pub fn triangulate_3d_polygon_with_holes(outer: &[Vec3], holes: &[Vec<Vec3>], normal: Vec3) -> Vec<[usize; 3]> {
-    if outer.len() < 3 { return Vec::new(); }
+    if outer.len() < 3 || normal.length_squared() < 1e-10 { return Vec::new(); }
 
     let u_axis = if normal.dot(Vec3::Y).abs() < 0.99 {
         normal.cross(Vec3::Y).normalize()
@@ -176,7 +176,7 @@ impl Mesh {
         let mut out_indices = Vec::with_capacity(indices.len());
         let mut face_id = 0u32;
 
-        for tri in indices.chunks(3) {
+        for tri in indices.chunks_exact(3) {
             let i0 = tri[0] as usize;
             let i1 = tri[1] as usize;
             let i2 = tri[2] as usize;
@@ -233,7 +233,7 @@ impl Mesh {
     /// Approximate face area (sum of triangle areas for this face_id).
     pub fn face_area(&self, face_id: u32) -> f32 {
         let mut area = 0.0;
-        for chunk in self.indices.chunks(3) {
+        for chunk in self.indices.chunks_exact(3) {
             if self.vertices[chunk[0] as usize].face_id != face_id { continue; }
             let p0 = Vec3::from(self.vertices[chunk[0] as usize].position);
             let p1 = Vec3::from(self.vertices[chunk[1] as usize].position);
@@ -325,14 +325,16 @@ impl Mesh {
         // Sort by angle around center for merged/cube faces.
         // This works for convex faces but NOT for concave ones
         // (concave faces should use stored_boundaries instead).
+        if positions.is_empty() { return None; }
         let center: Vec3 = positions.iter().copied().sum::<Vec3>() / positions.len() as f32;
 
         let u_axis = if normal.dot(Vec3::Y).abs() < 0.99 {
-            normal.cross(Vec3::Y).normalize()
+            normal.cross(Vec3::Y).normalize_or_zero()
         } else {
-            normal.cross(Vec3::X).normalize()
+            normal.cross(Vec3::X).normalize_or_zero()
         };
-        let v_axis = normal.cross(u_axis).normalize();
+        if u_axis.length_squared() < 1e-10 { return None; }
+        let v_axis = normal.cross(u_axis).normalize_or_zero();
 
         positions.sort_by(|a, b| {
             let da = *a - center;
@@ -367,6 +369,7 @@ impl Mesh {
     }
 
     /// Store a face boundary ordering (for concave regions from sketches).
+    #[allow(dead_code)]
     pub fn store_boundary(&mut self, face_id: u32, boundary: Vec<Vec3>) {
         self.stored_boundaries.insert(face_id, boundary);
     }
@@ -412,5 +415,185 @@ impl Mesh {
 
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
+    }
+}
+
+// =============================================================================
+// Tests — "triangle-soup era" safety net.
+// These protect the current mesh ops during the transition to BrepMesh.
+// They will be replaced when the BREP kernel takes over.
+// =============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec3;
+
+    fn approx_eq(a: f32, b: f32) -> bool { (a - b).abs() < 1e-4 }
+    fn v3_approx_eq(a: Vec3, b: Vec3) -> bool {
+        approx_eq(a.x, b.x) && approx_eq(a.y, b.y) && approx_eq(a.z, b.z)
+    }
+
+    // ---- Test 1: Cube invariants ----
+    #[test]
+    fn cube_has_correct_topology() {
+        let mesh = Mesh::cube();
+        assert_eq!(mesh.face_count(), 6, "cube should have 6 faces");
+        assert_eq!(mesh.vertex_count(), 24, "cube should have 24 vertices (4 per face, no sharing)");
+        assert_eq!(mesh.triangle_count(), 12, "cube should have 12 triangles (2 per face)");
+        assert_eq!(mesh.indices.len() % 3, 0, "index count must be divisible by 3");
+    }
+
+    #[test]
+    fn cube_normals_point_outward() {
+        let mesh = Mesh::cube();
+        for face_id in 0..6u32 {
+            let normal = mesh.face_normal(face_id).expect("face should exist");
+            assert!(approx_eq(normal.length(), 1.0), "normal should be unit length");
+
+            // Normal should point AWAY from origin (outward)
+            let center: Vec3 = mesh.vertices.iter()
+                .filter(|v| v.face_id == face_id)
+                .map(|v| Vec3::from(v.position))
+                .sum::<Vec3>() / 4.0;
+            assert!(normal.dot(center) > 0.0, "face {} normal should point outward (away from origin)", face_id);
+        }
+    }
+
+    #[test]
+    fn cube_bounding_box() {
+        let mesh = Mesh::cube();
+        let (min, max) = mesh.bounding_box();
+        assert!(v3_approx_eq(min, Vec3::splat(-0.5)));
+        assert!(v3_approx_eq(max, Vec3::splat(0.5)));
+    }
+
+    // ---- Test 2: Extrude produces correct topology ----
+    #[test]
+    fn extrude_cube_top_increases_faces() {
+        let mut mesh = Mesh::cube();
+        let top_face = 2; // top face (Y+)
+        let original_faces = mesh.face_count();
+
+        let cap = mesh.extrude_face(top_face, 1.0);
+        assert!(cap.is_some(), "extrude should succeed");
+
+        let new_faces = mesh.face_count();
+        // Side walls merge with coplanar existing faces, so we get:
+        // original 6 - 1 (top becomes cap) + 1 (cap) = still 6 if all 4 sides merge
+        // At minimum, the cap face_id should be different from any original
+        assert!(new_faces >= original_faces,
+            "face count should not decrease: was {}, now {}", original_faces, new_faces);
+        assert!(cap.unwrap() != top_face, "cap should have a new face_id");
+    }
+
+    #[test]
+    fn extrude_moves_bounding_box() {
+        let mut mesh = Mesh::cube();
+        let top_face = 2;
+        mesh.extrude_face(top_face, 1.0);
+
+        let (_, max) = mesh.bounding_box();
+        assert!(approx_eq(max.y, 1.5), "top should be at 0.5 + 1.0 = 1.5, got {}", max.y);
+    }
+
+    #[test]
+    fn extrude_cap_normal_preserved() {
+        let mut mesh = Mesh::cube();
+        let top_face = 2;
+        let original_normal = mesh.face_normal(top_face).unwrap();
+        let cap = mesh.extrude_face(top_face, 1.0).unwrap();
+
+        let cap_normal = mesh.face_normal(cap).unwrap();
+        assert!(v3_approx_eq(original_normal, cap_normal),
+            "cap normal should match original face normal");
+    }
+
+    // ---- Test 3: Cut produces correct topology ----
+    #[test]
+    fn cut_cube_top_preserves_bounding_box() {
+        let mut mesh = Mesh::cube();
+        let top_face = 2;
+        let (orig_min, orig_max) = mesh.bounding_box();
+
+        let floor = mesh.cut_face(top_face, 0.3);
+        assert!(floor.is_some(), "cut should succeed");
+
+        // Cut goes inward — bounding box should NOT change (pocket is inside the cube)
+        let (min, max) = mesh.bounding_box();
+        assert!(v3_approx_eq(min, orig_min), "min shouldn't change after cut");
+        assert!(v3_approx_eq(max, orig_max), "max shouldn't change after cut");
+    }
+
+    // ---- Test 4: Delete face compacts mesh ----
+    #[test]
+    fn delete_face_reduces_count() {
+        let mut mesh = Mesh::cube();
+        assert!(mesh.delete_face(0), "delete should succeed");
+        assert_eq!(mesh.face_count(), 5, "should have 5 faces after deleting one");
+
+        // All indices should be in bounds
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertices.len(),
+                "index {} out of bounds (verts: {})", idx, mesh.vertices.len());
+        }
+    }
+
+    // ---- Test 5: face_boundary_corners returns correct count ----
+    #[test]
+    fn cube_face_boundary_has_4_corners() {
+        let mesh = Mesh::cube();
+        for face_id in 0..6u32 {
+            let corners = mesh.face_boundary_corners(face_id);
+            assert!(corners.is_some(), "face {} should have boundary", face_id);
+            let corners = corners.unwrap();
+            assert_eq!(corners.len(), 4, "cube face {} should have 4 boundary corners, got {}", face_id, corners.len());
+        }
+    }
+
+    // ---- Test 6: Indices always valid ----
+    #[test]
+    fn indices_always_in_bounds() {
+        let mut mesh = Mesh::cube();
+        // Do several operations
+        mesh.extrude_face(2, 0.5);  // extrude top
+        mesh.extrude_face(0, 0.3);  // extrude front
+        mesh.delete_face(1);         // delete back
+
+        assert_eq!(mesh.indices.len() % 3, 0, "index count must be divisible by 3");
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertices.len(),
+                "index {} >= vertex count {}", idx, mesh.vertices.len());
+        }
+    }
+
+    // ---- Test 7: Extrude chain doesn't corrupt ----
+    #[test]
+    fn extrude_chain_3_deep() {
+        let mut mesh = Mesh::cube();
+        let cap1 = mesh.extrude_face(2, 0.5).expect("extrude 1");
+        let cap2 = mesh.extrude_face(cap1, 0.3).expect("extrude 2");
+        let cap3 = mesh.extrude_face(cap2, 0.2).expect("extrude 3");
+
+        // Cap should exist and be queryable
+        assert!(mesh.face_normal(cap3).is_some(), "cap3 should have a normal");
+
+        // Bounding box should reflect all extrusions
+        let (_, max) = mesh.bounding_box();
+        assert!(approx_eq(max.y, 0.5 + 0.5 + 0.3 + 0.2),
+            "max.y should be 1.5, got {}", max.y);
+
+        // All indices valid
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertices.len());
+        }
+    }
+
+    // ---- Test 8: Cylindrical detection ----
+    #[test]
+    fn is_face_planar_on_cube() {
+        let mesh = Mesh::cube();
+        for face_id in 0..6u32 {
+            assert!(mesh.is_face_planar(face_id), "cube face {} should be planar", face_id);
+        }
     }
 }

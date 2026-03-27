@@ -6,6 +6,7 @@ impl App {
         let Some(r) = &mut self.renderer else { return };
         let Some(face_id) = r.selected_face else { return };
         self.history.save_state(&r.mesh);
+        self.ui.dirty = true;
         if r.mesh.delete_face(face_id) {
             r.selected_face = None;
             r.mesh_pipeline.rebuild_buffers(&r.gpu.device, &r.mesh);

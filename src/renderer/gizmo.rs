@@ -7,9 +7,9 @@ use super::gpu_state::MSAA_SAMPLE_COUNT;
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct GizmoVertex {
-    position: [f32; 3],
-    color: [f32; 3],
+pub(crate) struct GizmoVertex {
+    pub(crate) position: [f32; 3],
+    pub(crate) color: [f32; 3],
 }
 
 #[repr(C)]

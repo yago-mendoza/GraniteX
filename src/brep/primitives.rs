@@ -1,8 +1,9 @@
 // BREP primitive constructors.
 
 use glam::Vec3;
-use super::{BrepMesh, FaceId};
+use super::BrepMesh;
 
+#[allow(dead_code)]
 impl BrepMesh {
     /// Unit cube centered at origin (±0.5).
     pub fn cube() -> Self {

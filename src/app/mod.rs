@@ -74,6 +74,10 @@ impl App {
             self.ui.construction_selected = None;
             self.ui.active_tool = Tool::Select;
             self.ui.dirty = false;
+            self.input.operation_dragging = false;
+            self.input.drag_accumulated = 0.0;
+            self.input.left_pressed = false;
+            self.input.left_was_drag = false;
             if let Some(r) = &mut self.renderer {
                 r.load_mesh(crate::renderer::Mesh::cube());
                 self.ui.toasts.push(crate::ui::Toast::new("New scene".into()));
@@ -159,58 +163,10 @@ impl App {
         }
         renderer.update_construction(&self.construction);
 
-        // Extrude — from sketch region (atomic) or from selected face
+        // Extrude — from sketch region (atomic) or from selected face.
+        // save_state is called AFTER confirming a valid target exists,
+        // so failed ops don't push useless undo snapshots or nuke the redo stack.
         if let Some(distance) = self.ui.extrude_request.take() {
-            self.history.save_state(&renderer.mesh);
-
-            // If there's a sketch with a selected region, do the FULL operation atomically:
-            // 1. Create base face from region (with holes if any)
-            // 2. Extrude it (creates outer + inner side walls)
-            // 3. Split parent face (remove the region from it)
-            let from_sketch = self.sketch.as_mut().and_then(|s| {
-                let pts = s.selected_region_3d()?;
-                let holes = s.selected_region_holes_3d();
-                let normal = s.plane.normal;
-                let parent_id = s.face_id; // None for reference plane sketches
-                let plane = s.plane.clone();
-                Some((pts, holes, normal, parent_id, plane))
-            });
-
-            let success = if let Some((region_pts, holes, normal, parent_id, plane)) = from_sketch {
-                let base_face = if holes.is_empty() {
-                    renderer.mesh.add_polygon_face_flush(&region_pts, normal)
-                } else {
-                    renderer.mesh.add_polygon_face_with_holes_flush(&region_pts, &holes, normal)
-                };
-                if let Some(cap) = renderer.mesh.extrude_face(base_face, distance) {
-                    // Only split parent face if sketching on a mesh face (not a reference plane)
-                    if let Some(pid) = parent_id {
-                        if renderer.mesh.is_face_planar(pid) {
-                            Self::split_parent_face(&mut renderer.mesh, pid, &region_pts, &holes, &plane);
-                        }
-                    }
-                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
-                    renderer.selected_face = Some(cap);
-                    renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(cap));
-                    true
-                } else { false }
-            } else {
-                renderer.extrude_selected(distance).is_some()
-            };
-
-            if success {
-                self.sketch = None;
-                self.ui.dirty = true;
-                self.ui.toasts.push(crate::ui::Toast::new(format!("Extruded {:.2}m", distance)));
-                self.ui.operation_history.push(format!("Extrude {:.2}m", distance));
-            }
-            renderer.clear_preview();
-        }
-
-        // Cut — from sketch region (atomic) or from selected face
-        if let Some(depth) = self.ui.cut_request.take() {
-            self.history.save_state(&renderer.mesh);
-
             let from_sketch = self.sketch.as_mut().and_then(|s| {
                 let pts = s.selected_region_3d()?;
                 let holes = s.selected_region_holes_3d();
@@ -221,6 +177,65 @@ impl App {
             });
 
             let success = if let Some((region_pts, holes, normal, parent_id, plane)) = from_sketch {
+                self.history.save_state(&renderer.mesh);
+                let base_face = if holes.is_empty() {
+                    renderer.mesh.add_polygon_face_flush(&region_pts, normal)
+                } else {
+                    renderer.mesh.add_polygon_face_with_holes_flush(&region_pts, &holes, normal)
+                };
+                if let Some(cap) = renderer.mesh.extrude_face(base_face, distance) {
+                    if let Some(pid) = parent_id {
+                        if renderer.mesh.is_face_planar(pid) {
+                            Self::split_parent_face(&mut renderer.mesh, pid, &region_pts, &holes, &plane);
+                        }
+                    }
+                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                    renderer.selected_face = Some(cap);
+                    renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(cap));
+                    true
+                } else {
+                    // Extrude failed after base face was created — roll back
+                    self.history.undo(&mut renderer.mesh);
+                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                    false
+                }
+            } else if renderer.selected_face.is_some() {
+                self.history.save_state(&renderer.mesh);
+                if renderer.extrude_selected(distance).is_some() {
+                    true
+                } else {
+                    self.history.undo(&mut renderer.mesh);
+                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                    false
+                }
+            } else {
+                false
+            };
+
+            if success {
+                self.sketch = None;
+                self.ui.dirty = true;
+                self.ui.toasts.push(crate::ui::Toast::new(format!("Extruded {:.2}m", distance)));
+                self.ui.operation_history.push(format!("Extrude {:.2}m", distance));
+            } else {
+                self.ui.toasts.push(crate::ui::Toast::new("Extrude failed — select a face or region first".into()));
+            }
+            renderer.clear_preview();
+        }
+
+        // Cut — from sketch region (atomic) or from selected face
+        if let Some(depth) = self.ui.cut_request.take() {
+            let from_sketch = self.sketch.as_mut().and_then(|s| {
+                let pts = s.selected_region_3d()?;
+                let holes = s.selected_region_holes_3d();
+                let normal = s.plane.normal;
+                let parent_id = s.face_id;
+                let plane = s.plane.clone();
+                Some((pts, holes, normal, parent_id, plane))
+            });
+
+            let success = if let Some((region_pts, holes, normal, parent_id, plane)) = from_sketch {
+                self.history.save_state(&renderer.mesh);
                 let base_face = if holes.is_empty() {
                     renderer.mesh.add_polygon_face_flush(&region_pts, normal)
                 } else {
@@ -236,9 +251,22 @@ impl App {
                     renderer.selected_face = Some(floor);
                     renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(floor));
                     true
-                } else { false }
+                } else {
+                    self.history.undo(&mut renderer.mesh);
+                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                    false
+                }
+            } else if renderer.selected_face.is_some() {
+                self.history.save_state(&renderer.mesh);
+                if renderer.cut_selected(depth).is_some() {
+                    true
+                } else {
+                    self.history.undo(&mut renderer.mesh);
+                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                    false
+                }
             } else {
-                renderer.cut_selected(depth).is_some()
+                false
             };
 
             if success {
@@ -246,6 +274,8 @@ impl App {
                 self.ui.dirty = true;
                 self.ui.toasts.push(crate::ui::Toast::new(format!("Cut {:.2}m", depth)));
                 self.ui.operation_history.push(format!("Cut {:.2}m", depth));
+            } else {
+                self.ui.toasts.push(crate::ui::Toast::new("Cut failed — select a face or region first".into()));
             }
             renderer.clear_preview();
         }
@@ -397,15 +427,18 @@ impl App {
         self.ui.mesh_verts = renderer.mesh.vertex_count();
         self.ui.mesh_tris = renderer.mesh.triangle_count();
 
-        // Selected face info for status bar
-        if let Some(fid) = renderer.selected_face {
-            self.ui.selected_face_id = Some(fid);
-            self.ui.selected_face_normal = renderer.mesh.face_normal(fid).map(|n| n.into());
-            self.ui.selected_face_area = Some(renderer.mesh.face_area(fid));
-        } else {
-            self.ui.selected_face_id = None;
-            self.ui.selected_face_normal = None;
-            self.ui.selected_face_area = None;
+        // Selected face info for status bar (only recompute when selection changes)
+        let current_sel = renderer.selected_face;
+        if current_sel != self.ui.selected_face_id {
+            if let Some(fid) = current_sel {
+                self.ui.selected_face_id = Some(fid);
+                self.ui.selected_face_normal = renderer.mesh.face_normal(fid).map(|n| n.into());
+                self.ui.selected_face_area = Some(renderer.mesh.face_area(fid));
+            } else {
+                self.ui.selected_face_id = None;
+                self.ui.selected_face_normal = None;
+                self.ui.selected_face_area = None;
+            }
         }
 
         // Cursor world position (intersect ray with XZ plane at y=0)
@@ -571,6 +604,7 @@ impl App {
                 let camera_data = crate::project::CameraData { target, distance: dist, yaw, pitch };
                 match crate::project::save_project(&path, &r.mesh, camera_data) {
                     Ok(()) => {
+                        self.ui.dirty = false;
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
                         self.ui.toasts.push(crate::ui::Toast::new(format!("Saved {}", name)));
                         self.ui.current_project_path = Some(path);
@@ -654,6 +688,7 @@ impl App {
                     if let Some(r) = &mut self.renderer {
                         self.history.save_state(&r.mesh);
                         r.load_mesh(mesh);
+                        self.ui.dirty = true;
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
                         let tris = r.mesh.triangle_count();
                         self.ui.toasts.push(crate::ui::Toast::new(
@@ -700,11 +735,33 @@ impl ApplicationHandler for App {
                 if let Some(r) = &mut self.renderer { r.resize(*size); }
             }
             WindowEvent::DroppedFile(path) => {
+                // Route .gnx files to project loader
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext.eq_ignore_ascii_case("gnx") {
+                    match crate::project::load_project(path) {
+                        Ok((mesh, camera_data)) => {
+                            self.sketch = None;
+                            self.history.clear();
+                            if let Some(r) = &mut self.renderer {
+                                r.load_mesh(mesh);
+                                r.restore_camera_state(camera_data.target, camera_data.distance, camera_data.yaw, camera_data.pitch);
+                            }
+                            self.ui.dirty = false;
+                            self.ui.current_project_path = Some(path.clone());
+                            let name = path.file_name().unwrap_or_default().to_string_lossy();
+                            self.ui.toasts.push(crate::ui::Toast::new(format!("Opened {}", name)));
+                        }
+                        Err(e) => {
+                            self.ui.toasts.push(crate::ui::Toast::new(format!("Open failed: {}", e)));
+                        }
+                    }
+                } else {
                 match crate::import::load_file(path) {
                     Ok(mesh) => {
                         if let Some(r) = &mut self.renderer {
                             self.history.save_state(&r.mesh);
                             r.load_mesh(mesh);
+                            self.ui.dirty = true;
                             let name = path.file_name().unwrap_or_default().to_string_lossy();
                             let tris = r.mesh.triangle_count();
                             self.ui.toasts.push(crate::ui::Toast::new(
@@ -716,6 +773,7 @@ impl ApplicationHandler for App {
                         self.ui.toasts.push(crate::ui::Toast::new(format!("Import failed: {}", e)));
                     }
                 }
+                } // close else (non-.gnx files)
             }
             WindowEvent::RedrawRequested => {
                 self.apply_ui_state();

@@ -34,7 +34,16 @@
       "WebFetch(domain:crates.io)",
       "WebFetch(domain:news.ycombinator.com)",
       "WebFetch(domain:mattferraro.dev)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:help.solidworks.com)",
+      "Bash(grep:*)",
+      "Bash(1)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(ls src/export* src/project* src/construction*)",
+      "Bash(find /c/Dev/granitex -name *.rs -type f)",
+      "Bash(mkdir -p C:/Dev/granitex/assets)",
+      "Bash(mv C:/Dev/granitex/granite_x_precision_cad_software.png C:/Dev/granitex/assets/banner.png)",
+      "Bash(cargo test:*)"
     ]
   }
 }

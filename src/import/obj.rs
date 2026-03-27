@@ -23,12 +23,12 @@ pub fn load(path: &Path) -> Result<Mesh, ImportError> {
         let base_vertex = all_positions.len() as u32;
 
         // Positions
-        for chunk in m.positions.chunks(3) {
+        for chunk in m.positions.chunks_exact(3) {
             all_positions.push(Vec3::new(chunk[0], chunk[1], chunk[2]));
         }
 
         // Normals (may be empty)
-        for chunk in m.normals.chunks(3) {
+        for chunk in m.normals.chunks_exact(3) {
             all_normals.push(Vec3::new(chunk[0], chunk[1], chunk[2]));
         }
 

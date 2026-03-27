@@ -25,6 +25,7 @@ pub struct ReferencePlane {
 }
 
 pub struct ReferenceAxis {
+    #[allow(dead_code)]
     pub name: String,
     pub origin: Vec3,
     pub direction: Vec3,
