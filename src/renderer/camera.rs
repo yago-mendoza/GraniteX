@@ -36,8 +36,8 @@ impl Camera {
             pitch: std::f32::consts::FRAC_PI_6,      // 30 degrees
             aspect,
             fov_y: 45.0_f32.to_radians(),
-            z_near: 0.01,
-            z_far: 1000.0,
+            z_near: 0.05,
+            z_far: 500.0,
             target_yaw: None,
             target_pitch: None,
             start_yaw: std::f32::consts::FRAC_PI_4,

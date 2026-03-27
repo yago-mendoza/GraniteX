@@ -46,7 +46,7 @@ Last updated: 2026-03-26 (Session 6)
 - [x] **P0** OBJ file loading (via tobj)
 - [x] **P0** Indexed mesh data structure (positions + normals + u32 indices)
 - [x] **P0** Flat shading with normals
-- [ ] **P1** Smooth shading (vertex normals)
+- [x] **P1** Smooth shading (vertex normals) — crease-angle averaging + face merging + vertex welding
 - [x] **P1** Bounding box calculation + auto-fit camera
 - [x] **P1** Drag-and-drop file import
 - [x] **P2** Mesh info panel (vertex count, face count, dimensions — in status bar)
@@ -130,12 +130,31 @@ Last updated: 2026-03-26 (Session 6)
 - [ ] **P3** Loft
 - [ ] **P3** Sweep
 
-## Phase 9: BREP Kernel (Target: 2026-11-01)
+## Phase 9: BREP Kernel Migration (Target: 2026-11-01) — EVALUATED
 
-- [ ] **P0** Evaluate whether truck crate is sufficient or custom kernel needed
-- [ ] **P0** Solid body representation (shells, faces, edges, vertices)
+**Decision (2026-03-27):** Use `opencascade-rs` (Rust bindings for OpenCASCADE/OCCT).
+- truck: stalled (Sept 2024), no fillets, fragile booleans — CADmium was archived partly for this.
+- Fornjot: paused, experimental, "unsuited for real-world use."
+- opencascade-rs: only option with fillets + robust booleans + STEP I/O. Uses glam (same as us).
+- Architecture: kernel behind trait boundary, current mesh becomes display-only tessellation.
+
+### Phase 9a: Integration Setup
+- [ ] **P0** Add opencascade-rs dependency, verify Windows build (CMake+MSVC required, ~17GB)
+- [ ] **P0** Define `CadKernel` trait (create_body, extrude, cut, fillet, tessellate, etc.)
+- [ ] **P0** Implement `OcctKernel` behind the trait
+- [ ] **P0** Tessellation: BREP → wgpu triangle mesh for display only
+
+### Phase 9b: Operation Migration
+- [ ] **P0** Extrude via OCCT (replaces manual vertex manipulation)
+- [ ] **P0** Cut via OCCT (proper boolean subtract)
 - [ ] **P0** Boolean operations (union, subtract, intersect)
-- [ ] **P1** Filleting (constant radius)
+- [ ] **P1** Fillet edges (constant radius)
+- [ ] **P1** Chamfer edges
+- [ ] **P1** Shell (hollow out solid)
+
+### Phase 9c: Data Model
+- [ ] **P0** Feature tree (ordered list of parametric features)
+- [ ] **P0** Feature replay (change parameter → rebuild from that point)
 - [ ] **P1** STEP file export
 - [ ] **P2** STEP file import
 - [ ] **P3** NURBS surface support

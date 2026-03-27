@@ -22,8 +22,8 @@ struct PreviewUniform {
     color: [f32; 4],
 }
 
-const EXTRUDE_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.25];
-const CUT_COLOR: [f32; 4] = [0.9, 0.25, 0.2, 0.3];
+const EXTRUDE_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.45];
+const CUT_COLOR: [f32; 4] = [0.9, 0.25, 0.2, 0.45];
 
 pub struct PreviewPipeline {
     pipeline: wgpu::RenderPipeline,
@@ -173,18 +173,21 @@ impl PreviewPipeline {
             return;
         };
 
-        let face_positions = corners;
-        let new_positions: Vec<Vec3> = face_positions.iter().map(|p| *p + offset).collect();
+        // Offset base face slightly along normal to prevent z-fighting
+        let z_bias = normal * 0.001;
+        let face_positions: Vec<Vec3> = corners.iter().map(|p| *p + z_bias).collect();
+        let new_positions: Vec<Vec3> = corners.iter().map(|p| *p + offset).collect();
 
         let mut verts = Vec::new();
         let pv = |p: Vec3| PreviewVertex { position: p.into(), _pad: 0.0 };
 
-        // Cap face (fan triangulation for any polygon)
+        // Cap face (ear-clipping for concave polygon support)
         let n = new_positions.len();
-        for i in 1..(n - 1) {
-            verts.push(pv(new_positions[0]));
-            verts.push(pv(new_positions[i]));
-            verts.push(pv(new_positions[i + 1]));
+        let cap_tris = super::mesh::triangulate_3d_polygon(&new_positions, normal);
+        for tri in &cap_tris {
+            verts.push(pv(new_positions[tri[0]]));
+            verts.push(pv(new_positions[tri[1]]));
+            verts.push(pv(new_positions[tri[2]]));
         }
 
         // N side faces
@@ -229,18 +232,21 @@ impl PreviewPipeline {
             return;
         };
 
-        let face_positions = corners;
-        let new_positions: Vec<Vec3> = face_positions.iter().map(|p| *p + offset).collect();
+        // Offset top face slightly inward to prevent z-fighting
+        let z_bias = normal * (-0.001);
+        let face_positions: Vec<Vec3> = corners.iter().map(|p| *p + z_bias).collect();
+        let new_positions: Vec<Vec3> = corners.iter().map(|p| *p + offset).collect();
 
         let mut verts = Vec::new();
         let pv = |p: Vec3| PreviewVertex { position: p.into(), _pad: 0.0 };
 
-        // Floor face (fan triangulation)
+        // Floor face (ear-clipping for concave support)
         let n = new_positions.len();
-        for i in 1..(n - 1) {
-            verts.push(pv(new_positions[0]));
-            verts.push(pv(new_positions[i]));
-            verts.push(pv(new_positions[i + 1]));
+        let floor_tris = super::mesh::triangulate_3d_polygon(&new_positions, normal);
+        for tri in &floor_tris {
+            verts.push(pv(new_positions[tri[0]]));
+            verts.push(pv(new_positions[tri[1]]));
+            verts.push(pv(new_positions[tri[2]]));
         }
 
         // N side wall faces
@@ -294,13 +300,14 @@ impl PreviewPipeline {
         }).collect();
 
         let mut verts = Vec::new();
-        let pv = |p: Vec3| PreviewVertex { position: (p + normal * 0.001).into(), _pad: 0.0 };
+        let pv = |p: Vec3| PreviewVertex { position: (p + normal * 0.01).into(), _pad: 0.0 };
 
-        // Inner face (fan triangulation)
-        for i in 1..(n - 1) {
-            verts.push(pv(inner[0]));
-            verts.push(pv(inner[i]));
-            verts.push(pv(inner[i + 1]));
+        // Inner face (ear-clipping for concave support)
+        let inner_tris = super::mesh::triangulate_3d_polygon(&inner, normal);
+        for tri in &inner_tris {
+            verts.push(pv(inner[tri[0]]));
+            verts.push(pv(inner[tri[1]]));
+            verts.push(pv(inner[tri[2]]));
         }
 
         // Connecting quads between outer and inner
@@ -319,6 +326,99 @@ impl PreviewPipeline {
         self.num_vertices = verts.len() as u32;
         self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Inset Preview Vertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+    }
+
+    /// Generate extrude preview directly from points (no mesh face needed).
+    /// Used for sketch regions before the face is actually created.
+    pub fn set_extrude_preview_from_points(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        face_positions: &[Vec3],
+        normal: Vec3,
+        distance: f32,
+    ) {
+        let n = face_positions.len();
+        if n < 3 { self.clear(); return; }
+
+        let offset = normal * distance;
+        let new_positions: Vec<Vec3> = face_positions.iter().map(|p| *p + offset).collect();
+
+        let mut verts = Vec::new();
+        let pv = |p: Vec3| PreviewVertex { position: p.into(), _pad: 0.0 };
+
+        // Cap face
+        let cap_tris = super::mesh::triangulate_3d_polygon(&new_positions, normal);
+        for tri in &cap_tris {
+            verts.push(pv(new_positions[tri[0]]));
+            verts.push(pv(new_positions[tri[1]]));
+            verts.push(pv(new_positions[tri[2]]));
+        }
+
+        // Side faces
+        for i in 0..n {
+            let j = (i + 1) % n;
+            verts.push(pv(face_positions[i]));
+            verts.push(pv(face_positions[j]));
+            verts.push(pv(new_positions[j]));
+            verts.push(pv(face_positions[i]));
+            verts.push(pv(new_positions[j]));
+            verts.push(pv(new_positions[i]));
+        }
+
+        self.write_color(queue, EXTRUDE_COLOR);
+        self.num_vertices = verts.len() as u32;
+        self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Extrude Preview (points)"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+    }
+
+    /// Generate cut preview directly from points.
+    pub fn set_cut_preview_from_points(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        face_positions: &[Vec3],
+        normal: Vec3,
+        depth: f32,
+    ) {
+        let n = face_positions.len();
+        if n < 3 { self.clear(); return; }
+
+        let offset = normal * (-depth);
+        let new_positions: Vec<Vec3> = face_positions.iter().map(|p| *p + offset).collect();
+
+        let mut verts = Vec::new();
+        let pv = |p: Vec3| PreviewVertex { position: p.into(), _pad: 0.0 };
+
+        // Floor face
+        let floor_tris = super::mesh::triangulate_3d_polygon(&new_positions, normal);
+        for tri in &floor_tris {
+            verts.push(pv(new_positions[tri[0]]));
+            verts.push(pv(new_positions[tri[1]]));
+            verts.push(pv(new_positions[tri[2]]));
+        }
+
+        // Side walls
+        for i in 0..n {
+            let j = (i + 1) % n;
+            verts.push(pv(face_positions[i]));
+            verts.push(pv(face_positions[j]));
+            verts.push(pv(new_positions[j]));
+            verts.push(pv(face_positions[i]));
+            verts.push(pv(new_positions[j]));
+            verts.push(pv(new_positions[i]));
+        }
+
+        self.write_color(queue, CUT_COLOR);
+        self.num_vertices = verts.len() as u32;
+        self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cut Preview (points)"),
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,
         }));

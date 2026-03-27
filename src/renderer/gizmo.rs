@@ -276,8 +276,10 @@ impl GizmoPipeline {
     }
 
     pub fn draw<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, width: u32, height: u32) {
+        if width == 0 || height == 0 { return; }
         // Draw in bottom-left corner, offset past the left panel (~160px)
         let size = 85.0_f32.min(width as f32 * 0.1).min(height as f32 * 0.15);
+        if size < 1.0 { return; }
         let x = 185.0; // past the fixed 150px left panel + generous margin
         let y = height as f32 - size - 25.0; // above status bar
 

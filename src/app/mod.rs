@@ -19,10 +19,15 @@ pub(super) struct InputState {
     pub(super) left_pressed: bool,
     pub(super) middle_pressed: bool,
     pub(super) left_was_drag: bool,
+    pub(super) left_press_pos: Option<(f64, f64)>,
     pub(super) last_mouse: Option<(f64, f64)>,
     pub(super) cursor_pos: (f64, f64),
     pub(super) cursor_moved: bool,
     pub(super) modifiers: ModifiersState,
+    /// Drag-to-extrude/cut: actively dragging to set distance.
+    pub(super) operation_dragging: bool,
+    pub(super) drag_start_y: f64,
+    pub(super) drag_accumulated: f32,
 }
 
 pub(super) struct App {
@@ -85,19 +90,83 @@ impl App {
         renderer.show_wireframe = self.ui.show_wireframe;
         self.ui.wireframe_supported = renderer.has_wireframe();
 
-        // Extrude
+        // Extrude — from sketch region (atomic) or from selected face
         if let Some(distance) = self.ui.extrude_request.take() {
             self.history.save_state(&renderer.mesh);
-            if renderer.extrude_selected(distance).is_some() {
+
+            // If there's a sketch with a selected region, do the FULL operation atomically:
+            // 1. Create base face from region (with holes if any)
+            // 2. Extrude it (creates outer + inner side walls)
+            // 3. Split parent face (remove the region from it)
+            let from_sketch = self.sketch.as_mut().and_then(|s| {
+                let pts = s.selected_region_3d()?;
+                let holes = s.selected_region_holes_3d();
+                let normal = s.plane.normal;
+                let parent_id = s.face_id;
+                let plane = s.plane.clone();
+                Some((pts, holes, normal, parent_id, plane))
+            });
+
+            let success = if let Some((region_pts, holes, normal, parent_id, plane)) = from_sketch {
+                let base_face = if holes.is_empty() {
+                    renderer.mesh.add_polygon_face_flush(&region_pts, normal)
+                } else {
+                    renderer.mesh.add_polygon_face_with_holes_flush(&region_pts, &holes, normal)
+                };
+                if let Some(cap) = renderer.mesh.extrude_face(base_face, distance) {
+                    if renderer.mesh.is_face_planar(parent_id) {
+                        Self::split_parent_face(&mut renderer.mesh, parent_id, &region_pts, &holes, &plane);
+                    }
+                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                    renderer.selected_face = Some(cap);
+                    renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(cap));
+                    true
+                } else { false }
+            } else {
+                renderer.extrude_selected(distance).is_some()
+            };
+
+            if success {
+                self.sketch = None;
                 self.ui.toasts.push(crate::ui::Toast::new(format!("Extruded {:.2}m", distance)));
             }
             renderer.clear_preview();
         }
 
-        // Cut
+        // Cut — from sketch region (atomic) or from selected face
         if let Some(depth) = self.ui.cut_request.take() {
             self.history.save_state(&renderer.mesh);
-            if renderer.cut_selected(depth).is_some() {
+
+            let from_sketch = self.sketch.as_mut().and_then(|s| {
+                let pts = s.selected_region_3d()?;
+                let holes = s.selected_region_holes_3d();
+                let normal = s.plane.normal;
+                let parent_id = s.face_id;
+                let plane = s.plane.clone();
+                Some((pts, holes, normal, parent_id, plane))
+            });
+
+            let success = if let Some((region_pts, holes, normal, parent_id, plane)) = from_sketch {
+                let base_face = if holes.is_empty() {
+                    renderer.mesh.add_polygon_face_flush(&region_pts, normal)
+                } else {
+                    renderer.mesh.add_polygon_face_with_holes_flush(&region_pts, &holes, normal)
+                };
+                if let Some(floor) = renderer.mesh.cut_face(base_face, depth) {
+                    if renderer.mesh.is_face_planar(parent_id) {
+                        Self::split_parent_face(&mut renderer.mesh, parent_id, &region_pts, &holes, &plane);
+                    }
+                    renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
+                    renderer.selected_face = Some(floor);
+                    renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(floor));
+                    true
+                } else { false }
+            } else {
+                renderer.cut_selected(depth).is_some()
+            };
+
+            if success {
+                self.sketch = None;
                 self.ui.toasts.push(crate::ui::Toast::new(format!("Cut {:.2}m", depth)));
             }
             renderer.clear_preview();
@@ -112,20 +181,47 @@ impl App {
                     renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
                     renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(inner));
                     self.ui.toasts.push(crate::ui::Toast::new(format!("Inset {:.2}m", amount)));
+                    self.sketch = None;
                 }
             }
         }
 
-        // Preview (extrude, cut, or inset)
-        if renderer.selected_face.is_some() {
-            match self.ui.active_tool {
-                Tool::Extrude => renderer.update_extrude_preview(self.ui.extrude_distance),
-                Tool::Cut => renderer.update_cut_preview(self.ui.cut_depth),
-                Tool::Inset => renderer.update_inset_preview(self.ui.inset_amount),
-                _ => renderer.clear_preview(),
+        // Preview — from sketch region OR from selected mesh face
+        let sketch_preview_data = self.sketch.as_mut().and_then(|s| {
+            if s.selected_region.is_none() { return None; }
+            let pts = s.selected_region_3d()?;
+            let normal = s.plane.normal;
+            Some((pts, normal))
+        });
+
+        match self.ui.active_tool {
+            Tool::Extrude => {
+                if let Some((pts, normal)) = &sketch_preview_data {
+                    // Preview from sketch region (no mesh face exists yet)
+                    renderer.preview_from_points(pts, *normal, self.ui.extrude_distance);
+                } else if renderer.selected_face.is_some() {
+                    renderer.update_extrude_preview(self.ui.extrude_distance);
+                } else {
+                    renderer.clear_preview();
+                }
             }
-        } else {
-            renderer.clear_preview();
+            Tool::Cut => {
+                if let Some((pts, normal)) = &sketch_preview_data {
+                    renderer.preview_cut_from_points(pts, *normal, self.ui.cut_depth);
+                } else if renderer.selected_face.is_some() {
+                    renderer.update_cut_preview(self.ui.cut_depth);
+                } else {
+                    renderer.clear_preview();
+                }
+            }
+            Tool::Inset => {
+                if renderer.selected_face.is_some() {
+                    renderer.update_inset_preview(self.ui.inset_amount);
+                } else {
+                    renderer.clear_preview();
+                }
+            }
+            _ => renderer.clear_preview(),
         }
 
         // Update sketch cursor
@@ -136,8 +232,8 @@ impl App {
             );
             if let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) {
                 let mut pos = sketch.world_to_2d(hit);
-                if let Some(snapped) = sketch.snap_to_endpoint(pos, 0.05) {
-                    pos = snapped;
+                if let Some(snap) = sketch.snap_to_target(pos, 0.05) {
+                    pos = snap.point;
                 }
                 sketch.cursor_2d = Some(pos);
             }
@@ -146,7 +242,17 @@ impl App {
             self.ui.sketch_entity_count = 0;
         }
 
-        // Render sketch
+        // Compute regions (needs &mut sketch for lazy recompute)
+        let region_data = if let Some(sketch) = &mut self.sketch {
+            let regions = sketch.regions().to_vec();
+            let selected = sketch.selected_region;
+            let plane = sketch.plane.clone();
+            Some((regions, selected, plane))
+        } else {
+            None
+        };
+
+        // Render sketch lines + region fills
         renderer.clear_sketch();
         if let Some(sketch) = &self.sketch {
             let tool = match self.ui.active_tool {
@@ -156,6 +262,11 @@ impl App {
                 _ => crate::ui::Tool::Select,
             };
             renderer.update_sketch_multi(sketch, tool, true);
+        }
+        if let Some((regions, selected, plane)) = region_data {
+            if !regions.is_empty() {
+                renderer.update_sketch_regions(&regions, selected, &plane);
+            }
         }
 
         // View presets
@@ -213,6 +324,90 @@ impl App {
             }
         } else {
             self.ui.cursor_world = None;
+        }
+    }
+
+    /// Split a parent face by cutting out a region (with optional holes).
+    /// After extruding a sketch region, the parent face still exists underneath.
+    /// This replaces it with the remainder (parent minus region).
+    /// This is how SolidWorks works: extrude SPLITS the face, never overlaps.
+    fn split_parent_face(
+        mesh: &mut crate::renderer::mesh::Mesh,
+        parent_face_id: u32,
+        region_boundary: &[glam::Vec3],
+        region_holes: &[Vec<glam::Vec3>],
+        plane: &crate::sketch::SketchPlane,
+    ) {
+        use geo::algorithm::bool_ops::BooleanOps;
+
+        // Get parent face boundary
+        let Some(parent_boundary) = mesh.face_boundary_corners(parent_face_id) else { return };
+        if parent_boundary.len() < 3 || region_boundary.len() < 3 { return; }
+
+        // Project boundaries to 2D on the sketch plane
+        let to_coord = |p: &glam::Vec3| -> geo::Coord<f64> {
+            let p2d = plane.world_to_2d(*p);
+            geo::Coord { x: p2d.x as f64, y: p2d.y as f64 }
+        };
+
+        let parent_coords: Vec<geo::Coord<f64>> = parent_boundary.iter().map(to_coord).collect();
+        let region_coords: Vec<geo::Coord<f64>> = region_boundary.iter().map(to_coord).collect();
+
+        // Build region polygon with holes (so the full region area is subtracted)
+        let hole_rings: Vec<geo::LineString<f64>> = region_holes.iter()
+            .map(|hole| geo::LineString::new(hole.iter().map(to_coord).collect()))
+            .collect();
+
+        let parent_poly = geo::Polygon::new(
+            geo::LineString::new(parent_coords),
+            vec![],
+        );
+        let region_poly = geo::Polygon::new(
+            geo::LineString::new(region_coords),
+            hole_rings,
+        );
+
+        // Compute remainder = parent - region
+        let remainder = parent_poly.difference(&region_poly);
+
+        // Delete the original parent face
+        let normal = plane.normal;
+        mesh.delete_face(parent_face_id);
+
+        // Add remainder polygon(s) as new face(s)
+        for poly in remainder.0.iter() {
+            // Exterior ring → 3D points
+            let coords: Vec<geo::Coord<f64>> = poly.exterior().0.clone();
+            if coords.len() < 4 { continue; } // geo includes closing point, so <4 means <3 unique
+
+            // Convert back to 3D (skip last point — geo duplicates first point to close)
+            let points_3d: Vec<glam::Vec3> = coords[..coords.len() - 1].iter()
+                .map(|c| {
+                    let p2d = crate::sketch::Point2D::new(c.x as f32, c.y as f32);
+                    plane.to_3d(p2d)
+                })
+                .collect();
+
+            if points_3d.len() < 3 { continue; }
+
+            // Check for interior holes
+            let holes: Vec<Vec<glam::Vec3>> = poly.interiors().iter().filter_map(|ring| {
+                let hole_coords = &ring.0;
+                if hole_coords.len() < 4 { return None; }
+                let pts: Vec<glam::Vec3> = hole_coords[..hole_coords.len() - 1].iter()
+                    .map(|c| {
+                        let p2d = crate::sketch::Point2D::new(c.x as f32, c.y as f32);
+                        plane.to_3d(p2d)
+                    })
+                    .collect();
+                if pts.len() >= 3 { Some(pts) } else { None }
+            }).collect();
+
+            if holes.is_empty() {
+                mesh.add_polygon_face_flush(&points_3d, normal);
+            } else {
+                mesh.add_polygon_face_with_holes_flush(&points_3d, &holes, normal);
+            }
         }
     }
 

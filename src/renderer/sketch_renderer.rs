@@ -6,7 +6,7 @@ use wgpu::util::DeviceExt;
 
 use super::camera::Camera;
 use super::gpu_state::MSAA_SAMPLE_COUNT;
-use crate::sketch::Sketch;
+use crate::sketch::{Sketch, SnapType};
 use crate::ui::SketchTool;
 
 #[repr(C)]
@@ -14,6 +14,8 @@ use crate::ui::SketchTool;
 struct SketchVertex {
     position: [f32; 3],
     color: [f32; 3],
+    alpha: f32,
+    _pad: f32, // align to 32 bytes
 }
 
 #[repr(C)]
@@ -28,6 +30,8 @@ pub struct SketchRenderer {
     bind_group: wgpu::BindGroup,
     vertex_buffer: Option<wgpu::Buffer>,
     num_vertices: u32,
+    region_fill_buffer: Option<wgpu::Buffer>,
+    num_region_vertices: u32,
 }
 
 impl SketchRenderer {
@@ -79,6 +83,7 @@ impl SketchRenderer {
             attributes: &[
                 wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
                 wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32 },
             ],
         };
 
@@ -120,7 +125,11 @@ impl SketchRenderer {
             cache: None,
         });
 
-        Self { pipeline, uniform_buffer, bind_group, vertex_buffer: None, num_vertices: 0 }
+        Self {
+            pipeline, uniform_buffer, bind_group,
+            vertex_buffer: None, num_vertices: 0,
+            region_fill_buffer: None, num_region_vertices: 0,
+        }
     }
 
     pub fn update_camera(&mut self, queue: &wgpu::Queue, camera: &Camera) {
@@ -159,6 +168,12 @@ impl SketchRenderer {
             self.push_dot_on_plane(&mut verts, p3d, normal, dot_size * 1.5, preview_color);
         }
 
+        // Snap indicator — show the snap target the cursor is near
+        if let Some(snap) = sketch.active_snap_target() {
+            let snap_3d = sketch.to_3d(snap.point);
+            self.push_snap_indicator(&mut verts, snap_3d, normal, snap.snap_type);
+        }
+
         self.num_vertices = verts.len() as u32;
         if verts.is_empty() {
             self.vertex_buffer = None;
@@ -181,29 +196,23 @@ impl SketchRenderer {
         if right.length() < 0.0001 { return; }
 
         // Offset slightly along normal to prevent z-fighting
-        let offset = normal * 0.003;
+        let offset = normal * 0.006;
         let a = p0 - right + offset;
         let b = p0 + right + offset;
         let c = p1 + right + offset;
         let d = p1 - right + offset;
 
-        let sv = |pos: Vec3| SketchVertex { position: pos.into(), color };
+        let sv = |pos: Vec3| SketchVertex { position: pos.into(), color, alpha: 1.0, _pad: 0.0 };
         verts.extend_from_slice(&[sv(a), sv(b), sv(c), sv(a), sv(c), sv(d)]);
     }
 
     /// Render a dot as a small CIRCLE lying on the sketch plane (fan triangulation).
     fn push_dot_on_plane(&self, verts: &mut Vec<SketchVertex>, pos: Vec3, normal: Vec3, size: f32, color: [f32; 3]) {
-        let u = if normal.dot(Vec3::Y).abs() < 0.99 {
-            normal.cross(Vec3::Y).normalize()
-        } else {
-            normal.cross(Vec3::X).normalize()
-        };
-        let v = normal.cross(u).normalize();
-
-        let offset = normal * 0.004; // slightly more offset than lines
+        let (u, v) = Self::plane_axes(normal);
+        let offset = normal * 0.004;
         let center = pos + offset;
         let segments = 10;
-        let sv = |p: Vec3| SketchVertex { position: p.into(), color };
+        let sv = |p: Vec3| SketchVertex { position: p.into(), color, alpha: 1.0, _pad: 0.0 };
 
         for i in 0..segments {
             let a0 = std::f32::consts::TAU * i as f32 / segments as f32;
@@ -212,6 +221,124 @@ impl SketchRenderer {
             let p1 = center + u * (size * a1.cos()) + v * (size * a1.sin());
             verts.extend_from_slice(&[sv(center), sv(p0), sv(p1)]);
         }
+    }
+
+    /// Render a SQUARE indicator (for corner snap).
+    fn push_square_on_plane(&self, verts: &mut Vec<SketchVertex>, pos: Vec3, normal: Vec3, size: f32, color: [f32; 3]) {
+        let (u, v) = Self::plane_axes(normal);
+        let offset = normal * 0.005;
+        let center = pos + offset;
+        let sv = |p: Vec3| SketchVertex { position: p.into(), color, alpha: 1.0, _pad: 0.0 };
+
+        let a = center - u * size - v * size;
+        let b = center + u * size - v * size;
+        let c = center + u * size + v * size;
+        let d = center - u * size + v * size;
+        verts.extend_from_slice(&[sv(a), sv(b), sv(c), sv(a), sv(c), sv(d)]);
+    }
+
+    /// Render a TRIANGLE indicator (for midpoint snap).
+    fn push_triangle_on_plane(&self, verts: &mut Vec<SketchVertex>, pos: Vec3, normal: Vec3, size: f32, color: [f32; 3]) {
+        let (u, v) = Self::plane_axes(normal);
+        let offset = normal * 0.005;
+        let center = pos + offset;
+        let sv = |p: Vec3| SketchVertex { position: p.into(), color, alpha: 1.0, _pad: 0.0 };
+
+        let top = center + v * size * 1.2;
+        let bl = center - u * size - v * size * 0.6;
+        let br = center + u * size - v * size * 0.6;
+        verts.extend_from_slice(&[sv(top), sv(bl), sv(br)]);
+    }
+
+    /// Render a DIAMOND indicator (for edge snap).
+    fn push_diamond_on_plane(&self, verts: &mut Vec<SketchVertex>, pos: Vec3, normal: Vec3, size: f32, color: [f32; 3]) {
+        let (u, v) = Self::plane_axes(normal);
+        let offset = normal * 0.005;
+        let center = pos + offset;
+        let sv = |p: Vec3| SketchVertex { position: p.into(), color, alpha: 1.0, _pad: 0.0 };
+
+        let top = center + v * size;
+        let right = center + u * size;
+        let bottom = center - v * size;
+        let left = center - u * size;
+        verts.extend_from_slice(&[sv(top), sv(right), sv(bottom), sv(top), sv(bottom), sv(left)]);
+    }
+
+    /// Render the appropriate snap indicator based on type.
+    fn push_snap_indicator(&self, verts: &mut Vec<SketchVertex>, pos: Vec3, normal: Vec3, snap_type: SnapType) {
+        let size = 0.012;
+        match snap_type {
+            SnapType::Endpoint => {
+                self.push_dot_on_plane(verts, pos, normal, size, [0.95, 0.9, 0.2]); // yellow
+            }
+            SnapType::Corner => {
+                self.push_square_on_plane(verts, pos, normal, size, [1.0, 0.6, 0.1]); // orange
+            }
+            SnapType::Midpoint => {
+                self.push_triangle_on_plane(verts, pos, normal, size, [0.2, 0.9, 0.9]); // cyan
+            }
+            SnapType::Edge => {
+                self.push_diamond_on_plane(verts, pos, normal, size * 0.8, [0.9, 0.3, 0.9]); // magenta
+            }
+        }
+    }
+
+    fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
+        let u = if normal.dot(Vec3::Y).abs() < 0.99 {
+            normal.cross(Vec3::Y).normalize()
+        } else {
+            normal.cross(Vec3::X).normalize()
+        };
+        let v = normal.cross(u).normalize();
+        (u, v)
+    }
+
+    /// Append region fill triangles to the vertex buffer.
+    /// Called after update_sketch with region data computed externally.
+    pub fn append_region_fills(
+        &mut self,
+        device: &wgpu::Device,
+        regions: &[crate::sketch::SketchRegion],
+        selected_region: Option<usize>,
+        plane: &crate::sketch::SketchPlane,
+    ) {
+        let normal = plane.normal;
+        let offset = normal * 0.005; // above the face, consistent with sketch lines
+        let region_color = [0.3, 0.45, 0.7]; // subtle blue
+        let selected_color = [0.35, 0.55, 0.85]; // brighter blue for selected
+        let region_alpha = 0.15;
+        let selected_alpha = 0.3;
+
+        let mut verts = Vec::new();
+
+        for (i, region) in regions.iter().enumerate() {
+            let is_selected = selected_region == Some(i);
+            let color = if is_selected { selected_color } else { region_color };
+            let alpha = if is_selected { selected_alpha } else { region_alpha };
+
+            let points_3d: Vec<Vec3> = region.boundary.iter()
+                .map(|p| plane.to_3d(*p) + offset)
+                .collect();
+
+            for tri in &region.triangles {
+                if tri[0] >= points_3d.len() || tri[1] >= points_3d.len() || tri[2] >= points_3d.len() {
+                    continue;
+                }
+                let sv = |pos: Vec3| SketchVertex { position: pos.into(), color, alpha, _pad: 0.0 };
+                verts.push(sv(points_3d[tri[0]]));
+                verts.push(sv(points_3d[tri[1]]));
+                verts.push(sv(points_3d[tri[2]]));
+            }
+        }
+
+        if verts.is_empty() { return; }
+
+        self.region_fill_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Region Fill Vertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+        self.num_region_vertices = verts.len() as u32;
     }
 
     /// Render only confirmed entities (for inactive sketches on other faces).
@@ -246,9 +373,21 @@ impl SketchRenderer {
     pub fn clear(&mut self) {
         self.vertex_buffer = None;
         self.num_vertices = 0;
+        self.region_fill_buffer = None;
+        self.num_region_vertices = 0;
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        // Draw region fills first (behind sketch lines)
+        if let Some(ref rb) = self.region_fill_buffer {
+            if self.num_region_vertices > 0 {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, rb.slice(..));
+                pass.draw(0..self.num_region_vertices, 0..1);
+            }
+        }
+        // Then draw sketch lines and dots (on top)
         if let Some(ref vb) = self.vertex_buffer {
             if self.num_vertices > 0 {
                 pass.set_pipeline(&self.pipeline);

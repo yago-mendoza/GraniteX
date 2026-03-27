@@ -18,6 +18,8 @@ pub struct MeshSnapshot {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub next_face_id: u32,
+    pub stored_boundaries: std::collections::HashMap<u32, Vec<glam::Vec3>>,
+    pub stored_holes: std::collections::HashMap<u32, Vec<Vec<glam::Vec3>>>,
 }
 
 impl MeshSnapshot {
@@ -26,6 +28,8 @@ impl MeshSnapshot {
             vertices: mesh.vertices.clone(),
             indices: mesh.indices.clone(),
             next_face_id: mesh.next_face_id(),
+            stored_boundaries: mesh.stored_boundaries().clone(),
+            stored_holes: mesh.stored_holes().clone(),
         }
     }
 
@@ -33,6 +37,8 @@ impl MeshSnapshot {
         mesh.vertices = self.vertices.clone();
         mesh.indices = self.indices.clone();
         mesh.set_next_face_id(self.next_face_id);
+        mesh.set_stored_boundaries(self.stored_boundaries.clone());
+        mesh.set_stored_holes(self.stored_holes.clone());
     }
 }
 

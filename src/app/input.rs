@@ -17,13 +17,59 @@ impl App {
                         if pressed {
                             self.input.left_pressed = true;
                             self.input.left_was_drag = false;
+                            self.input.left_press_pos = Some(self.input.cursor_pos);
+
+                            // Start drag-to-extrude/cut if tool is active + face selected
+                            let is_op_tool = matches!(self.ui.active_tool, Tool::Extrude | Tool::Cut);
+                            let has_selection = self.renderer.as_ref()
+                                .map(|r| r.selected_face.is_some())
+                                .unwrap_or(false);
+                            let has_region = self.sketch.as_ref()
+                                .map(|s| s.selected_region.is_some())
+                                .unwrap_or(false);
+
+                            if is_op_tool && (has_selection || has_region) {
+                                self.input.operation_dragging = true;
+                                self.input.drag_start_y = self.input.cursor_pos.1;
+                                self.input.drag_accumulated = 0.0;
+                            }
                         } else {
+                            // End drag-to-extrude: apply the operation
+                            if self.input.operation_dragging {
+                                let dist = self.input.drag_accumulated;
+                                if dist.abs() > 0.01 {
+                                    match self.ui.active_tool {
+                                        Tool::Extrude => {
+                                            self.ui.extrude_distance = dist;
+                                            self.ui.extrude_request = Some(dist);
+                                        }
+                                        Tool::Cut => {
+                                            self.ui.cut_depth = dist.abs();
+                                            self.ui.cut_request = Some(dist.abs());
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                self.input.operation_dragging = false;
+                                self.input.left_pressed = false;
+                                self.input.left_was_drag = false;
+                                return;
+                            }
+
+                            // Normal click handling
+                            if let Some(press) = self.input.left_press_pos {
+                                let dx = self.input.cursor_pos.0 - press.0;
+                                let dy = self.input.cursor_pos.1 - press.1;
+                                if dx * dx + dy * dy > 25.0 {
+                                    self.input.left_was_drag = true;
+                                }
+                            }
                             if !self.input.left_was_drag {
                                 let sx = self.input.cursor_pos.0 as f32;
                                 let sy = self.input.cursor_pos.1 as f32;
                                 if self.is_drawing_tool() {
                                     self.handle_draw_click(sx, sy);
-                                } else {
+                                } else if !self.try_select_region(sx, sy) {
                                     if let Some(r) = &mut self.renderer {
                                         r.try_select_face(sx, sy);
                                     }
@@ -72,12 +118,27 @@ impl App {
                 self.input.cursor_pos = current;
                 self.input.cursor_moved = true;
 
+                // Drag-to-extrude: update distance from vertical mouse movement
+                if self.input.operation_dragging {
+                    let dy = (self.input.drag_start_y - current.1) as f32; // up = positive
+                    // Scale by camera distance for consistent feel
+                    let scale = self.renderer.as_ref()
+                        .map(|r| r.camera_distance() * 0.003)
+                        .unwrap_or(0.01);
+                    self.input.drag_accumulated = dy * scale;
+                    // Update UI slider to match drag
+                    match self.ui.active_tool {
+                        Tool::Extrude => self.ui.extrude_distance = self.input.drag_accumulated,
+                        Tool::Cut => self.ui.cut_depth = self.input.drag_accumulated.abs(),
+                        _ => {}
+                    }
+                }
+
                 if !self.egui_ctx.wants_pointer_input() {
                     if let Some(last) = self.input.last_mouse {
                         let dx = (current.0 - last.0) as f32;
                         let dy = (current.1 - last.1) as f32;
-                        if dx.abs() > 1.0 || dy.abs() > 1.0 {
-                            if self.input.left_pressed { self.input.left_was_drag = true; }
+                        if dx.abs() > 0.5 || dy.abs() > 0.5 {
                             if let Some(r) = &mut self.renderer {
                                 if self.input.middle_pressed {
                                     if self.input.modifiers.control_key() {
@@ -136,11 +197,14 @@ impl App {
                     }
 
                     // Ctrl+Z = Undo
+                    // Priority: sketch undo only if actively drawing, else mesh undo
                     Key::Character(c) if c.as_str() == "z" && ctrl => {
-                        if let Some(sketch) = &mut self.sketch {
-                            if !sketch.entities.is_empty() {
-                                sketch.undo_last();
-                                return;
+                        if self.is_drawing_tool() {
+                            if let Some(sketch) = &mut self.sketch {
+                                if !sketch.entities.is_empty() {
+                                    sketch.undo_last();
+                                    return;
+                                }
                             }
                         }
                         if let Some(r) = &mut self.renderer {

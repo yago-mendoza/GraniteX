@@ -14,9 +14,18 @@ impl Mesh {
         let n = corners.len();
         if n < 3 { return None; }
 
-        let face_verts = self.face_vertex_indices(face_id);
         let old_positions: Vec<[f32; 3]> = corners.iter().map(|c| (*c).into()).collect();
 
+        // Save original triangles, then remove them from the index buffer.
+        // We'll re-add them as cap triangles after moving the vertices.
+        let cap_tris: Vec<[u32; 3]> = self.indices.chunks(3)
+            .filter(|c| self.vertices[c[0] as usize].face_id == face_id)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        self.remove_face_indices(face_id);
+
+        // Move original vertices to cap position
+        let face_verts = self.face_vertex_indices(face_id);
         let cap_face_id = self.next_face_id;
         self.next_face_id += 1;
         for &vi in &face_verts {
@@ -25,13 +34,72 @@ impl Mesh {
             self.vertices[vi].face_id = cap_face_id;
         }
 
+        // Re-add cap triangles (same vertex indices, now at cap position)
+        for tri in &cap_tris {
+            self.indices.extend_from_slice(&[tri[0], tri[1], tri[2]]);
+        }
+
+        // Transfer stored boundary to cap face
+        if let Some(boundary) = self.stored_boundaries.remove(&face_id) {
+            let cap_boundary: Vec<Vec3> = boundary.iter().map(|p| *p + offset).collect();
+            self.stored_boundaries.insert(cap_face_id, cap_boundary);
+        }
+
+        // Transfer stored holes to cap face
+        let hole_boundaries = self.stored_holes.remove(&face_id);
+        if let Some(ref holes) = hole_boundaries {
+            let cap_holes: Vec<Vec<Vec3>> = holes.iter()
+                .map(|hole| hole.iter().map(|p| *p + offset).collect())
+                .collect();
+            self.stored_holes.insert(cap_face_id, cap_holes);
+        }
+
         let new_positions: Vec<[f32; 3]> = old_positions.iter()
             .map(|p| (Vec3::from(*p) + offset).into())
             .collect();
 
-        // For cylindrical extrusions (many sides), use a single face_id with smooth normals.
-        // For simple extrusions (4 sides = box), use individual face_ids with coplanar merging.
-        let is_cylindrical = n > 4;
+        // Create outer boundary side walls
+        self.create_side_walls(&old_positions, &new_positions, normal, false);
+
+        // Create inner (hole) side walls — reversed winding so normals face inward
+        if let Some(ref holes) = hole_boundaries {
+            for hole in holes {
+                let hole_old: Vec<[f32; 3]> = hole.iter().map(|p| (*p).into()).collect();
+                let hole_new: Vec<[f32; 3]> = hole.iter().map(|p| (*p + offset).into()).collect();
+                self.create_side_walls(&hole_old, &hole_new, normal, true);
+            }
+        }
+
+        Some(cap_face_id)
+    }
+
+    /// Create side walls between two boundary rings (old → new positions).
+    /// If `reverse` is true, winding is flipped (for hole interiors).
+    fn create_side_walls(
+        &mut self,
+        old_positions: &[[f32; 3]],
+        new_positions: &[[f32; 3]],
+        face_normal: Vec3,
+        reverse: bool,
+    ) {
+        let n = old_positions.len();
+        if n < 3 { return; }
+
+        // Detect if this is a tessellated circle (many points, all ~equidistant from center)
+        // vs a user-drawn polygon (few points, arbitrary shape).
+        // Circles get smooth radial normals (cylinder). Polygons get flat faces (hard edges).
+        let center = old_positions.iter()
+            .map(|p| Vec3::from(*p))
+            .sum::<Vec3>() / n as f32;
+
+        let is_cylindrical = n > 16 && {
+            // Check if all corners are approximately equidistant from center (within 5%)
+            let distances: Vec<f32> = old_positions.iter()
+                .map(|p| (Vec3::from(*p) - center).length())
+                .collect();
+            let avg = distances.iter().sum::<f32>() / distances.len() as f32;
+            avg > 1e-6 && distances.iter().all(|d| (d - avg).abs() / avg < 0.05)
+        };
         let cylinder_face_id = if is_cylindrical {
             let id = self.next_face_id;
             self.next_face_id += 1;
@@ -40,41 +108,43 @@ impl Mesh {
             None
         };
 
-        // Compute center of the face (for radial normals on cylinders)
-        let center = old_positions.iter()
-            .map(|p| Vec3::from(*p))
-            .sum::<Vec3>() / n as f32;
+        let radial_normals: Vec<Vec3> = if cylinder_face_id.is_some() {
+            old_positions.iter().map(|p| {
+                let pos = Vec3::from(*p);
+                let radial = (pos - center - face_normal * (pos - center).dot(face_normal)).normalize();
+                if reverse { -radial } else { radial }
+            }).collect()
+        } else {
+            Vec::new()
+        };
 
         for i in 0..n {
             let j = (i + 1) % n;
 
-            let bottom0 = old_positions[i];
-            let bottom1 = old_positions[j];
-            let top0 = new_positions[i];
-            let top1 = new_positions[j];
+            // For reversed (hole) walls, swap i/j to flip winding
+            let (a, b) = if reverse { (j, i) } else { (i, j) };
+
+            let bottom0 = old_positions[a];
+            let bottom1 = old_positions[b];
+            let top0 = new_positions[a];
+            let top1 = new_positions[b];
 
             let side_positions = [bottom0, bottom1, top1, top0];
 
             if let Some(cyl_id) = cylinder_face_id {
-                // Smooth normals: radial direction from the extrude axis
-                let axis = normal;
-                let mid0 = Vec3::from(bottom0);
-                let mid1 = Vec3::from(bottom1);
-                // Project position onto the axis-perpendicular plane for radial normal
-                let radial0 = (mid0 - center - axis * (mid0 - center).dot(axis)).normalize();
-                let radial1 = (mid1 - center - axis * (mid1 - center).dot(axis)).normalize();
+                let n0 = radial_normals[a];
+                let n1 = radial_normals[b];
 
                 let base = self.vertices.len() as u32;
-                let v = |pos: [f32; 3], n: Vec3| Vertex {
-                    position: pos, normal: n.into(), face_id: cyl_id, _pad: 0,
+                let v = |pos: [f32; 3], norm: Vec3| Vertex {
+                    position: pos, normal: norm.into(), face_id: cyl_id, _pad: 0,
                 };
-                self.vertices.push(v(bottom0, radial0));
-                self.vertices.push(v(bottom1, radial1));
-                self.vertices.push(v(top1, radial1));
-                self.vertices.push(v(top0, radial0));
+                self.vertices.push(v(bottom0, n0));
+                self.vertices.push(v(bottom1, n1));
+                self.vertices.push(v(top1, n1));
+                self.vertices.push(v(top0, n0));
                 self.indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
             } else {
-                // Flat normals with coplanar face merging
                 let edge_h = Vec3::from(top0) - Vec3::from(bottom0);
                 let edge_w = Vec3::from(bottom1) - Vec3::from(bottom0);
                 let side_normal = edge_w.cross(edge_h).normalize();
@@ -90,8 +160,6 @@ impl Mesh {
                 self.push_quad(side_positions, side_normal, side_face_id);
             }
         }
-
-        Some(cap_face_id)
     }
 
     /// Cut into a face along its negative normal by `depth` (pocket).
@@ -103,9 +171,17 @@ impl Mesh {
         let n = corners.len();
         if n < 3 { return None; }
 
-        let face_verts = self.face_vertex_indices(face_id);
         let old_positions: Vec<[f32; 3]> = corners.iter().map(|c| (*c).into()).collect();
 
+        // Save original triangles, then remove from index buffer
+        let floor_tris: Vec<[u32; 3]> = self.indices.chunks(3)
+            .filter(|c| self.vertices[c[0] as usize].face_id == face_id)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        self.remove_face_indices(face_id);
+
+        // Move original vertices to floor position
+        let face_verts = self.face_vertex_indices(face_id);
         let floor_face_id = self.next_face_id;
         self.next_face_id += 1;
         for &vi in &face_verts {
@@ -115,58 +191,39 @@ impl Mesh {
             self.vertices[vi].face_id = floor_face_id;
         }
 
+        // Re-add floor triangles
+        for tri in &floor_tris {
+            self.indices.extend_from_slice(&[tri[0], tri[1], tri[2]]);
+        }
+
+        // Transfer stored boundary to floor face
+        if let Some(boundary) = self.stored_boundaries.remove(&face_id) {
+            let floor_boundary: Vec<Vec3> = boundary.iter().map(|p| *p + offset).collect();
+            self.stored_boundaries.insert(floor_face_id, floor_boundary);
+        }
+
+        // Transfer stored holes to floor face
+        let hole_boundaries = self.stored_holes.remove(&face_id);
+        if let Some(ref holes) = hole_boundaries {
+            let floor_holes: Vec<Vec<Vec3>> = holes.iter()
+                .map(|hole| hole.iter().map(|p| *p + offset).collect())
+                .collect();
+            self.stored_holes.insert(floor_face_id, floor_holes);
+        }
+
         let new_positions: Vec<[f32; 3]> = old_positions.iter()
             .map(|p| (Vec3::from(*p) + offset).into())
             .collect();
 
-        let is_cylindrical = n > 4;
-        let cylinder_face_id = if is_cylindrical {
-            let id = self.next_face_id;
-            self.next_face_id += 1;
-            Some(id)
-        } else {
-            None
-        };
+        // Create outer boundary walls (cut walls face inward, so reverse=true)
+        self.create_side_walls(&old_positions, &new_positions, normal, true);
 
-        let center = old_positions.iter()
-            .map(|p| Vec3::from(*p))
-            .sum::<Vec3>() / n as f32;
-
-        for i in 0..n {
-            let j = (i + 1) % n;
-
-            let top0 = old_positions[i];
-            let top1 = old_positions[j];
-            let bot0 = new_positions[i];
-            let bot1 = new_positions[j];
-
-            if let Some(cyl_id) = cylinder_face_id {
-                let mid0 = Vec3::from(top0);
-                let mid1 = Vec3::from(top1);
-                let radial0 = (mid0 - center - normal * (mid0 - center).dot(normal)).normalize();
-                let radial1 = (mid1 - center - normal * (mid1 - center).dot(normal)).normalize();
-                // Inward-facing for cut
-                let n0 = -radial0;
-                let n1 = -radial1;
-
-                let base = self.vertices.len() as u32;
-                let v = |pos: [f32; 3], norm: Vec3| Vertex {
-                    position: pos, normal: norm.into(), face_id: cyl_id, _pad: 0,
-                };
-                self.vertices.push(v(top0, n0));
-                self.vertices.push(v(top1, n1));
-                self.vertices.push(v(bot1, n1));
-                self.vertices.push(v(bot0, n0));
-                self.indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
-            } else {
-                let edge_h = Vec3::from(bot0) - Vec3::from(top0);
-                let edge_w = Vec3::from(top1) - Vec3::from(top0);
-                let side_normal = edge_h.cross(edge_w).normalize();
-
-                let wall_face_id = self.next_face_id;
-                self.next_face_id += 1;
-
-                self.push_quad([top0, top1, bot1, bot0], side_normal, wall_face_id);
+        // Create inner (hole) walls — these face outward (reverse=false) since it's a cut
+        if let Some(ref holes) = hole_boundaries {
+            for hole in holes {
+                let hole_old: Vec<[f32; 3]> = hole.iter().map(|p| (*p).into()).collect();
+                let hole_new: Vec<[f32; 3]> = hole.iter().map(|p| (*p + offset).into()).collect();
+                self.create_side_walls(&hole_old, &hole_new, normal, false);
             }
         }
 
@@ -175,6 +232,8 @@ impl Mesh {
 
     /// Delete a face and compact the mesh.
     pub fn delete_face(&mut self, face_id: u32) -> bool {
+        self.stored_boundaries.remove(&face_id);
+        self.stored_holes.remove(&face_id);
         let mut new_indices: Vec<u32> = Vec::new();
         for chunk in self.indices.chunks(3) {
             if self.vertices[chunk[0] as usize].face_id != face_id {
@@ -238,11 +297,15 @@ impl Mesh {
                 _pad: 0,
             });
         }
-        for i in 1..(n as u32 - 1) {
-            self.indices.push(inner_base);
-            self.indices.push(inner_base + i);
-            self.indices.push(inner_base + i + 1);
+        let tris = super::triangulate_3d_polygon(&inner_corners, normal);
+        for tri in &tris {
+            self.indices.push(inner_base + tri[0] as u32);
+            self.indices.push(inner_base + tri[1] as u32);
+            self.indices.push(inner_base + tri[2] as u32);
         }
+
+        // Store boundary for inner face
+        self.stored_boundaries.insert(inner_face_id, inner_corners.clone());
 
         // Connecting quads
         for i in 0..n {
@@ -259,10 +322,10 @@ impl Mesh {
         Some(inner_face_id)
     }
 
-    /// Add a polygon face, slightly offset along normal to prevent z-fighting.
+    /// Add a polygon face, offset along normal to prevent z-fighting with parent.
     #[allow(dead_code)]
     pub fn add_polygon_face(&mut self, points: &[Vec3], normal: Vec3) -> u32 {
-        self.add_polygon_face_inner(points, normal, normal * 0.003)
+        self.add_polygon_face_inner(points, normal, normal * 0.008)
     }
 
     /// Add a polygon face flush with the surface (no z-offset).
@@ -289,16 +352,90 @@ impl Mesh {
             });
         }
 
-        for i in 1..(points.len() as u32 - 1) {
-            self.indices.push(base_idx);
-            self.indices.push(base_idx + i);
-            self.indices.push(base_idx + i + 1);
+        // Ear-clipping triangulation (handles concave polygons correctly)
+        let offset_points: Vec<Vec3> = points.iter().map(|p| *p + offset).collect();
+        let tris = super::triangulate_3d_polygon(&offset_points, normal);
+        for tri in &tris {
+            self.indices.push(base_idx + tri[0] as u32);
+            self.indices.push(base_idx + tri[1] as u32);
+            self.indices.push(base_idx + tri[2] as u32);
+        }
+
+        // Store original boundary ordering for concave polygon support.
+        // face_boundary_corners() will use this instead of angle-sorting.
+        let stored: Vec<Vec3> = points.iter().map(|p| *p + offset).collect();
+        self.stored_boundaries.insert(face_id, stored);
+
+        face_id
+    }
+
+    /// Add a polygon face with holes (for region-with-hole shapes like washers).
+    pub fn add_polygon_face_with_holes_flush(
+        &mut self,
+        outer: &[Vec3],
+        holes: &[Vec<Vec3>],
+        normal: Vec3,
+    ) -> u32 {
+        let face_id = self.next_face_id;
+        self.next_face_id += 1;
+
+        if outer.len() < 3 { return face_id; }
+
+        let base_idx = self.vertices.len() as u32;
+
+        // Push outer boundary vertices
+        for p in outer {
+            self.vertices.push(Vertex {
+                position: (*p).into(),
+                normal: normal.into(),
+                face_id,
+                _pad: 0,
+            });
+        }
+
+        // Push hole vertices
+        for hole in holes {
+            for p in hole {
+                self.vertices.push(Vertex {
+                    position: (*p).into(),
+                    normal: normal.into(),
+                    face_id,
+                    _pad: 0,
+                });
+            }
+        }
+
+        // Triangulate with earcutr (project to 2D for triangulation)
+        let tris = super::triangulate_3d_polygon_with_holes(outer, holes, normal);
+        for tri in &tris {
+            self.indices.push(base_idx + tri[0] as u32);
+            self.indices.push(base_idx + tri[1] as u32);
+            self.indices.push(base_idx + tri[2] as u32);
+        }
+
+        // Store outer boundary for face_boundary_corners
+        self.stored_boundaries.insert(face_id, outer.to_vec());
+
+        // Store hole boundaries for extrude/cut to create inner walls
+        if !holes.is_empty() {
+            self.stored_holes.insert(face_id, holes.to_vec());
         }
 
         face_id
     }
 
     // --- Helpers ---
+
+    /// Remove all triangles of a face from the index buffer WITHOUT compacting vertices.
+    fn remove_face_indices(&mut self, face_id: u32) {
+        let mut new_indices = Vec::with_capacity(self.indices.len());
+        for chunk in self.indices.chunks(3) {
+            if chunk.len() == 3 && self.vertices[chunk[0] as usize].face_id != face_id {
+                new_indices.extend_from_slice(chunk);
+            }
+        }
+        self.indices = new_indices;
+    }
 
     fn push_quad(&mut self, positions: [[f32; 3]; 4], normal: Vec3, face_id: u32) {
         let base = self.vertices.len() as u32;

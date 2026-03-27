@@ -7,6 +7,7 @@
 use glam::Vec3;
 use super::Point2D;
 
+#[derive(Clone)]
 pub struct SketchPlane {
     pub origin: Vec3,
     pub u_axis: Vec3, // local X direction in world space

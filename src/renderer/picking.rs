@@ -50,7 +50,8 @@ pub fn pick_face(
         let v1 = Vec3::from(verts[i1].position);
         let v2 = Vec3::from(verts[i2].position);
 
-        // Test both windings (mesh has inconsistent winding on some faces)
+        // Test both windings — required for two-sided picking in CAD
+        // (cut pocket walls face inward, but still need to be selectable)
         let t = ray_triangle_intersect(ray_origin, ray_dir, v0, v1, v2)
             .or_else(|| ray_triangle_intersect(ray_origin, ray_dir, v0, v2, v1));
 

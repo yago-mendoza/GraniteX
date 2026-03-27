@@ -26,7 +26,15 @@
       "Bash(git push:*)",
       "Bash(/c/Users/$USERNAME/.cargo/bin/cargo check:*)",
       "Bash(cargo clippy:*)",
-      "Bash(RUSTFLAGS=\"-W warnings\" cargo build)"
+      "Bash(RUSTFLAGS=\"-W warnings\" cargo build)",
+      "WebSearch",
+      "Bash(cargo search:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(cargo info:*)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:news.ycombinator.com)",
+      "WebFetch(domain:mattferraro.dev)",
+      "WebFetch(domain:docs.rs)"
     ]
   }
 }

@@ -10,24 +10,35 @@ impl App {
     pub(super) fn handle_draw_click(&mut self, screen_x: f32, screen_y: f32) {
         let Some(renderer) = &self.renderer else { return };
 
-        let result = crate::renderer::picking::pick_face(
-            screen_x, screen_y,
-            renderer.gpu_width(), renderer.gpu_height(),
-            renderer.view_proj(),
-            &renderer.mesh,
-        );
-        let Some(pick) = result else { return };
-        let face_id = pick.face_id;
+        // If no sketch exists, create one on the clicked face
+        if self.sketch.is_none() {
+            let result = crate::renderer::picking::pick_face(
+                screen_x, screen_y,
+                renderer.gpu_width(), renderer.gpu_height(),
+                renderer.view_proj(),
+                &renderer.mesh,
+            );
+            let Some(pick) = result else { return };
+            let face_id = pick.face_id;
 
-        let need_new = match &self.sketch {
-            None => true,
-            Some(s) => s.face_id != face_id,
-        };
-        if need_new {
+            // Only allow sketching on PLANAR faces (not cylinders, spheres, etc.)
+            if !renderer.mesh.is_face_planar(face_id) {
+                self.ui.toasts.push(crate::ui::Toast::new(
+                    "Cannot sketch on curved surfaces — select a flat face".into()
+                ));
+                return;
+            }
+
             let Some(normal) = renderer.mesh.face_normal(face_id) else { return };
             let Some(center) = renderer.face_center(face_id) else { return };
             let plane = SketchPlane::from_face(normal, center);
-            self.sketch = Some(crate::sketch::Sketch::new(plane, face_id));
+
+            // Get parent face boundary in 2D for outer region computation
+            let face_boundary_2d = renderer.mesh.face_boundary_corners(face_id).map(|pts| {
+                pts.iter().map(|p| plane.world_to_2d(*p)).collect::<Vec<_>>()
+            });
+
+            self.sketch = Some(crate::sketch::Sketch::new(plane, face_id, face_boundary_2d));
         }
 
         let Some(renderer) = &self.renderer else { return };
@@ -38,8 +49,9 @@ impl App {
         let mut pos = sketch.world_to_2d(hit);
         sketch.cursor_2d = Some(pos);
 
-        if let Some(snapped) = sketch.snap_to_endpoint(pos, 0.05) {
-            pos = snapped;
+        // Snap to nearest target (endpoints, corners, midpoints, edges)
+        if let Some(snap) = sketch.snap_to_target(pos, 0.05) {
+            pos = snap.point;
         }
 
         let mut contour_closed = false;
@@ -84,83 +96,51 @@ impl App {
         }
 
         if contour_closed {
-            self.convert_contour_to_face();
-            self.sketch = None;
-            self.ui.active_tool = Tool::Select;
+            if let Some(sketch) = &mut self.sketch {
+                sketch.pending_start = None;
+                sketch.chain_start = None;
+                sketch.region_solver.mark_dirty();
+                sketch.selected_region = None;
+            }
+
+            let n = self.sketch.as_mut()
+                .map(|s| s.regions().len())
+                .unwrap_or(0);
+
+            if n == 1 {
+                // Single region — auto-select it (NO mesh face created yet!)
+                // The face will be created atomically when user applies extrude/cut.
+                if let Some(sketch) = &mut self.sketch {
+                    sketch.selected_region = Some(0);
+                }
+                self.ui.active_tool = Tool::Extrude;
+                self.ui.toasts.push(crate::ui::Toast::new("Contour closed — ready to extrude".into()));
+            } else if n > 1 {
+                self.ui.active_tool = Tool::Select;
+                self.ui.toasts.push(crate::ui::Toast::new(
+                    format!("{} regions — click inside one to select", n)
+                ));
+            }
         }
     }
 
-    pub(super) fn convert_contour_to_face(&mut self) {
-        let Some(sketch) = &self.sketch else { return };
-        let Some(renderer) = &mut self.renderer else { return };
+    /// Try to select a sketch region at screen coordinates.
+    /// Does NOT create a mesh face — just sets selected_region.
+    /// The face is created atomically when the user applies an operation.
+    pub(super) fn try_select_region(&mut self, screen_x: f32, screen_y: f32) -> bool {
+        let Some(sketch) = &mut self.sketch else { return false };
+        let Some(renderer) = &self.renderer else { return false };
 
-        self.history.save_state(&renderer.mesh);
+        let (ray_o, ray_d) = renderer.screen_to_ray(screen_x, screen_y);
+        let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) else { return false };
+        let pos_2d = sketch.world_to_2d(hit);
 
-        let entities = &sketch.entities;
-        if entities.is_empty() { return; }
-
-        let mut contour_points: Vec<crate::sketch::Point2D> = Vec::new();
-
-        let last = &entities[entities.len() - 1];
-        match last {
-            crate::sketch::SketchEntity::Circle { center, radius } => {
-                let segments = 64;
-                for j in 0..segments {
-                    let angle = std::f32::consts::TAU * j as f32 / segments as f32;
-                    contour_points.push(crate::sketch::Point2D::new(
-                        center.x + radius * angle.cos(),
-                        center.y + radius * angle.sin(),
-                    ));
-                }
-            }
-            crate::sketch::SketchEntity::Line { .. } => {
-                let mut start_idx = entities.len() - 1;
-                while start_idx > 0 {
-                    if let (
-                        crate::sketch::SketchEntity::Line { end: prev_end, .. },
-                        crate::sketch::SketchEntity::Line { start: curr_start, .. }
-                    ) = (&entities[start_idx - 1], &entities[start_idx]) {
-                        if prev_end.distance_to(*curr_start) < 0.02 {
-                            start_idx -= 1;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                for entity in &entities[start_idx..] {
-                    if let crate::sketch::SketchEntity::Line { start, end } = entity {
-                        if contour_points.is_empty() || start.distance_to(*contour_points.last().unwrap()) > 0.01 {
-                            contour_points.push(*start);
-                        }
-                        contour_points.push(*end);
-                    }
-                }
-            }
+        if !sketch.select_region_at(pos_2d) {
+            return false;
         }
 
-        if contour_points.len() < 3 { return; }
-
-        if contour_points.first().unwrap().distance_to(*contour_points.last().unwrap()) < 0.02 {
-            contour_points.pop();
-        }
-        if contour_points.len() < 3 { return; }
-
-        let points_3d: Vec<glam::Vec3> = contour_points.iter()
-            .map(|p| sketch.to_3d(*p))
-            .collect();
-        let normal = sketch.plane.normal;
-
-        // Keep the parent face intact — just overlay the contour on top.
-        // SolidWorks doesn't modify geometry until an operation (extrude/cut) is applied.
-        // The tiny z-offset prevents z-fighting with the parent face underneath.
-        let new_face_id = renderer.mesh.add_polygon_face(&points_3d, normal);
-        renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
-
-        // Auto-select the new face so user can immediately extrude
-        renderer.selected_face = Some(new_face_id);
-        renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(new_face_id));
+        self.ui.active_tool = Tool::Extrude;
+        self.ui.toasts.push(crate::ui::Toast::new("Region selected — ready to extrude".into()));
+        true
     }
 }

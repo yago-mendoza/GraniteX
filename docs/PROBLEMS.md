@@ -1,54 +1,91 @@
 # GraniteX — Known Problems & Technical Debt
 
-Last updated: 2026-03-26
+Last updated: 2026-03-27
 
-## Active Blockers
+## Architectural Limitation
+
+### The Triangle Soup Problem
+**Status:** FUNDAMENTAL — shapes all future development
+**Description:** GraniteX operates on a triangle mesh (`Vec<Vertex>` + `Vec<u32>` indices) with face_id tags. SolidWorks/Fusion360 use a BREP kernel where faces are parametric surfaces and topology is explicit. Our approach requires fragile heuristics (vertex deduplication, angle-sorting, stored_boundaries HashMap) that break on complex geometry.
+**Impact:** Every mesh operation (extrude, cut, inset) has edge cases. The `face_boundary_corners` function fails on concave polygons. Boolean face splitting is approximate. Undo is snapshot-based (full mesh clone).
+**Long-term fix:** Migrate to `opencascade-rs` (Rust bindings for OpenCASCADE). Research (2026-03-27) evaluated all Rust BREP options: `truck` (stalled since Sept 2024, no fillets), Fornjot (paused, experimental), opencascade-rs (only viable option with fillets + robust booleans + STEP export). CADmium project was archived partly because truck lacked these capabilities.
+**Architecture:** Kernel behind a trait boundary so it can be swapped in the future. Current triangle mesh becomes display-only tessellation. See RESEARCH.md for full evaluation.
+**Short-term mitigation:** `stored_boundaries` HashMap tracks face ordering. `triangulate_3d_polygon` uses earcutr. `split_parent_face` uses geo boolean operations. These work for 90% of cases.
+
+## Active Issues (2026-03-27 Audit)
+
+### PROB-008: Shader lacks specular + gamma correction
+**Status:** FIXED (2026-03-27)
+**Description:** Lighting math was in sRGB space (should be linear). No specular highlights made surfaces look flat/matte.
+**Resolution:** Added Blinn-Phong specular, sRGB↔linear conversion, 3-light setup.
+
+### PROB-009: Cube top/bottom winding inverted
+**Status:** FIXED (2026-03-27)
+**Description:** Top face (8,9,10) and bottom face (12,14,13) had cross products producing inward normals. Doesn't affect rendering (abs() two-sided lighting) but would break backface culling.
+**Resolution:** Swapped index order for top and bottom faces.
+
+### PROB-010: Preview z-fighting with underlying mesh
+**Status:** FIXED (2026-03-27)
+**Description:** Extrude/cut preview cap faces sat exactly on the mesh surface → z-fighting.
+**Resolution:** Added small normal offset (±0.001) to preview base positions.
+
+### PROB-011: Edge depth bias magic numbers
+**Status:** IMPROVED (2026-03-27)
+**Description:** Edge rendering depth bias `constant:-4, slope_scale:-2.0, clamp:-0.01` was device-dependent and too aggressive at shallow angles.
+**Resolution:** Adjusted to `constant:-8, slope_scale:-1.5, clamp:-0.0001` for better cross-angle behavior.
+
+### PROB-012: No real topology (half-edge)
+**Status:** OPEN — blocked on kernel migration
+**Description:** Face adjacency requires O(F×V) position comparison. Edge detection scans all triangles. No shared vertices between faces.
+
+### PROB-013: No parametric surfaces
+**Status:** OPEN — blocked on kernel migration
+**Description:** Everything is flat triangles. Cylinders are faceted. No fillets/chamfers possible. No STEP export.
+
+### PROB-014: No feature tree
+**Status:** OPEN — blocked on kernel migration
+**Description:** Operations are destructive on triangle soup. Cannot edit parameters after the fact. Undo is full mesh snapshot.
+
+## Resolved
 
 ### PROB-001: Rust not installed
 **Status:** RESOLVED (2026-03-26)
-**Description:** Yago's machine doesn't have the Rust toolchain installed.
 **Resolution:** Installed Rust 1.94.0 via rustup.
 
-## Anticipated Problems
+### PROB-005: Ghost face after extrude
+**Status:** RESOLVED (2026-03-27)
+**Description:** `extrude_face` mutated vertices in-place without removing old triangles → duplicate geometry at cap position.
+**Resolution:** Save triangle topology, remove old face indices, mutate vertices to cap, re-add cap triangles. Same fix for `cut_face`.
 
-### PROB-002: wgpu backend selection on Windows
-**Risk:** Medium
-**Description:** wgpu on Windows defaults to DX12, which has some edge cases with older drivers. May need to force Vulkan backend for RenderDoc compatibility.
-**Mitigation:** Set `WGPU_BACKEND=vulkan` env var if DX12 causes issues. Test both backends early.
+### PROB-006: No hole support in polygon faces
+**Status:** RESOLVED (2026-03-27)
+**Description:** Fan triangulation couldn't represent faces with holes (washer/frame shapes).
+**Resolution:** `add_polygon_face_with_holes_flush` uses earcutr with hole_indices. Regions from `geo` boolean ops now extract interior rings as holes.
 
-### PROB-003: egui + 3D viewport input conflict
-**Risk:** Medium
-**Description:** egui captures mouse/keyboard events. When the cursor is over the 3D viewport, we need to pass input to the camera/tools instead of egui. Need to check `egui::Context::wants_pointer_input()` and `wants_keyboard_input()`.
-**Mitigation:** Well-known pattern, documented in egui examples. Handle early in Phase 1.
-
-### PROB-004: Floating point precision in geometry
-**Risk:** High (long-term)
-**Description:** Floating point arithmetic causes accumulation errors in geometric operations. Boolean operations, intersection tests, and constraint solving all suffer from this.
-**Mitigation:** Use epsilon comparisons, robust predicates crate, and consider exact arithmetic for critical operations. This is a Phase 9 concern.
+### PROB-007: Face boundary fails on concave shapes
+**Status:** MITIGATED (2026-03-27)
+**Description:** `face_boundary_corners` angle-sorting fails for concave polygons.
+**Resolution:** `stored_boundaries` HashMap preserves original boundary ordering. All face-creating paths now populate it.
 
 ## Technical Debt Register
 
 ### DEBT-001: Per-frame O(n) face_count()
 **Severity:** P2
-**Description:** `face_count()` collects all face_ids, sorts, and deduplicates every frame (called from UI stats). On large imported meshes this is wasteful.
 **Fix:** Cache face count; invalidate on mesh mutation.
 
 ### DEBT-002: Full mesh snapshot on every undo checkpoint
 **Severity:** P2
-**Description:** `CommandHistory::save_state()` clones the entire vertex/index vectors. For large meshes (100k+ tris from STL import), each undo point is >1MB.
-**Fix:** Implement delta-based undo (store only changed faces) or copy-on-write with `Arc<Vec<...>>`.
+**Fix:** Delta-based undo or copy-on-write.
 
 ### DEBT-003: Linear scan in face_normal()
 **Severity:** P2
-**Description:** `face_normal()` does `.find()` on the full vertex list. Called frequently during operations and picking.
-**Fix:** Build `HashMap<face_id, FaceInfo>` cache.
+**Fix:** HashMap<face_id, FaceInfo> cache.
 
 ### DEBT-004: No BVH for picking
 **Severity:** P3 (fine for now, P1 at 10k+ faces)
-**Description:** `pick_face()` tests every triangle via Moller-Trumbore. O(n) per click/hover.
-**Fix:** Build AABB BVH tree, cull branches before triangle tests.
+**Fix:** AABB BVH tree.
 
-### DEBT-005: Edge rendering requires POLYGON_MODE_LINE
+### DEBT-005: Edge rendering portability
 **Severity:** P2
-**Description:** Edge overlay uses `wgpu::PolygonMode::Line` which requires a device feature not available on all GPUs or WebGPU.
-**Fix:** Generate explicit edge line geometry from mesh topology (extract unique edges, render as LineList).
+**Description:** Edge overlay now uses LineList topology with boundary-only edges (no POLYGON_MODE_LINE needed). The old PolygonMode::Line wireframe toggle still requires the GPU feature.
+**Status:** Mostly resolved. Wireframe toggle hidden if feature unavailable.

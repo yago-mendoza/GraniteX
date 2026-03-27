@@ -221,9 +221,9 @@ impl MeshPipeline {
                 depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState {
-                    constant: -2,
-                    slope_scale: -1.0,
-                    clamp: 0.0,
+                    constant: -8,       // push edges toward camera (in depth buffer units)
+                    slope_scale: -1.5,  // scale with surface slope (less aggressive to avoid pop-in)
+                    clamp: -0.0001,     // small clamp prevents excessive bias on near-parallel faces
                 },
             }),
             multisample: wgpu::MultisampleState {
@@ -295,8 +295,15 @@ impl MeshPipeline {
             if ka <= kb { (ka, kb) } else { (kb, ka) }
         };
 
-        // Pass 1: Collect face_ids per unique edge.
-        let mut edge_faces: HashMap<EdgeKey, (HashSet<u32>, [f32; 3], [f32; 3])> = HashMap::new();
+        // Pass 1: Collect face_ids AND triangle count per unique edge.
+        // tri_count distinguishes internal edges (2 tris, same face) from mesh boundaries (1 tri).
+        struct EdgeInfo {
+            faces: HashSet<u32>,
+            tri_count: u32,
+            pa: [f32; 3],
+            pb: [f32; 3],
+        }
+        let mut edge_faces: HashMap<EdgeKey, EdgeInfo> = HashMap::new();
 
         for tri in mesh.indices.chunks_exact(3) {
             let i0 = tri[0] as usize;
@@ -310,52 +317,35 @@ impl MeshPipeline {
                 let key = edge_key(pa, pb);
 
                 edge_faces.entry(key)
-                    .and_modify(|(faces, _, _)| { faces.insert(face_id); })
+                    .and_modify(|info| {
+                        info.faces.insert(face_id);
+                        info.tri_count += 1;
+                    })
                     .or_insert_with(|| {
                         let mut s = HashSet::new();
                         s.insert(face_id);
-                        (s, pa, pb)
+                        EdgeInfo { faces: s, tri_count: 1, pa, pb }
                     });
             }
         }
 
-        // Build face normal cache for coplanarity check.
-        let mut face_normals: std::collections::HashMap<u32, glam::Vec3> = std::collections::HashMap::new();
-        for v in &mesh.vertices {
-            face_normals.entry(v.face_id).or_insert_with(|| glam::Vec3::from(v.normal));
-        }
-
-        // Pass 2: Emit boundary edges.
-        // - 1 face → mesh boundary (open surface edge) → always draw
-        // - 2+ faces, normals differ → face boundary → draw (SolidWorks-style)
-        // - 2+ faces, normals same → coplanar (e.g. inset quads) → skip
-        // Internal triangle diagonals (same face_id on both sides) are automatically excluded
-        // because they contribute only 1 entry to the face_id set.
+        // Pass 2: Emit edges.
+        // Simple, correct rule — same as SolidWorks:
+        //   - 2+ different face_ids → DRAW (face boundary)
+        //   - 1 face, 1 triangle → DRAW (open mesh boundary)
+        //   - 1 face, 2+ triangles → SKIP (internal triangulation edge)
         let mut positions: Vec<f32> = Vec::new();
-        for (_, (faces, pa, pb)) in &edge_faces {
-            if faces.len() == 1 {
-                // Mesh boundary edge — always draw
-                positions.extend_from_slice(pa);
-                positions.extend_from_slice(pb);
-                continue;
+        for info in edge_faces.values() {
+            if info.faces.len() > 1 {
+                // Different faces meet here → always a visible edge
+                positions.extend_from_slice(&info.pa);
+                positions.extend_from_slice(&info.pb);
+            } else if info.tri_count == 1 {
+                // Open mesh boundary → visible edge
+                positions.extend_from_slice(&info.pa);
+                positions.extend_from_slice(&info.pb);
             }
-
-            // Multi-face edge: only draw if normals differ (~1.8°+ angle)
-            let face_ids: Vec<u32> = faces.iter().copied().collect();
-            let mut has_angle = false;
-            for i in 0..face_ids.len() {
-                for j in (i + 1)..face_ids.len() {
-                    if let (Some(na), Some(nb)) = (face_normals.get(&face_ids[i]), face_normals.get(&face_ids[j])) {
-                        if na.dot(*nb).abs() < 0.9995 {
-                            has_angle = true;
-                        }
-                    }
-                }
-            }
-            if has_angle {
-                positions.extend_from_slice(pa);
-                positions.extend_from_slice(pb);
-            }
+            // else: internal edge within a face → skip
         }
 
         if positions.is_empty() {

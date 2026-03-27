@@ -1,4 +1,5 @@
 mod app;
+mod brep;
 mod commands;
 mod import;
 mod renderer;

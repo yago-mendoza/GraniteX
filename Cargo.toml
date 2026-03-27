@@ -30,6 +30,11 @@ pollster = "0.4"
 tobj = "4"
 # File dialogs
 rfd = "0.15"
+# Geometry (polygon booleans, point-in-polygon)
+geo = "0.29"
+earcutr = "0.4"
+# Stable-handle arena (half-edge mesh)
+slotmap = "1"
 
 [profile.dev]
 opt-level = 1

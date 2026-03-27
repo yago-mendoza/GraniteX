@@ -202,6 +202,16 @@ impl Renderer {
         }
     }
 
+    /// Preview extrude from raw points (for sketch regions, no mesh face needed).
+    pub fn preview_from_points(&mut self, points: &[glam::Vec3], normal: glam::Vec3, distance: f32) {
+        self.preview.set_extrude_preview_from_points(&self.gpu.device, &self.gpu.queue, points, normal, distance);
+    }
+
+    /// Preview cut from raw points.
+    pub fn preview_cut_from_points(&mut self, points: &[glam::Vec3], normal: glam::Vec3, depth: f32) {
+        self.preview.set_cut_preview_from_points(&self.gpu.device, &self.gpu.queue, points, normal, depth);
+    }
+
     pub fn clear_preview(&mut self) {
         self.preview.clear();
     }
@@ -224,6 +234,15 @@ impl Renderer {
         }
     }
 
+    pub fn update_sketch_regions(
+        &mut self,
+        regions: &[crate::sketch::SketchRegion],
+        selected_region: Option<usize>,
+        plane: &crate::sketch::SketchPlane,
+    ) {
+        self.sketch_renderer.append_region_fills(&self.gpu.device, regions, selected_region, plane);
+    }
+
     pub fn clear_sketch(&mut self) {
         self.sketch_renderer.clear();
     }
@@ -240,6 +259,9 @@ impl Renderer {
         self.gpu.config.height as f32
     }
 
+    pub fn camera_distance(&self) -> f32 {
+        self.camera.distance
+    }
 
     /// Unproject screen coordinates to a ray (origin, direction).
     pub fn screen_to_ray(&self, screen_x: f32, screen_y: f32) -> (glam::Vec3, glam::Vec3) {
@@ -292,6 +314,33 @@ impl Renderer {
     }
 
     // --- Operations ---
+
+    /// Extrude a sketch profile directly (SolidWorks-style: sketch → extrude).
+    /// Creates the base face from the contour, then extrudes it.
+    #[allow(dead_code)]
+    pub fn extrude_sketch_profile(&mut self, points: &[glam::Vec3], normal: glam::Vec3, distance: f32) -> Option<u32> {
+        // Create the base face flush on the surface
+        let base_face = self.mesh.add_polygon_face_flush(points, normal);
+        // Now extrude that face
+        let cap = self.mesh.extrude_face(base_face, distance)?;
+
+        self.mesh_pipeline.rebuild_buffers(&self.gpu.device, &self.mesh);
+        self.selected_face = Some(cap);
+        self.mesh_pipeline.set_selected_face(&self.gpu.queue, self.selected_face);
+        Some(cap)
+    }
+
+    /// Cut a sketch profile directly (SolidWorks-style: sketch → cut).
+    #[allow(dead_code)]
+    pub fn cut_sketch_profile(&mut self, points: &[glam::Vec3], normal: glam::Vec3, depth: f32) -> Option<u32> {
+        let base_face = self.mesh.add_polygon_face_flush(points, normal);
+        let floor = self.mesh.cut_face(base_face, depth)?;
+
+        self.mesh_pipeline.rebuild_buffers(&self.gpu.device, &self.mesh);
+        self.selected_face = Some(floor);
+        self.mesh_pipeline.set_selected_face(&self.gpu.queue, self.selected_face);
+        Some(floor)
+    }
 
     /// Extrude the currently selected face by `distance` along its normal.
     /// Returns the new cap face_id if successful.
@@ -393,8 +442,7 @@ impl Renderer {
                 self.mesh_pipeline.draw_wireframe(&mut pass);
             } else {
                 self.mesh_pipeline.draw(&mut pass);
-                // Edge overlay disabled until crash is diagnosed
-                // self.mesh_pipeline.draw_edges(&mut pass);
+                self.mesh_pipeline.draw_edges(&mut pass);
             }
             self.preview.draw(&mut pass);
             self.sketch_renderer.draw(&mut pass);

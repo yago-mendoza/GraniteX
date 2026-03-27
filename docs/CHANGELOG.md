@@ -137,3 +137,61 @@
 - **Fillet button disabled**: Shown grayed-out with "Coming soon" tooltip instead of doing nothing.
 - **Ctrl+Shift+Z = Redo**: Alternative redo shortcut (SolidWorks convention).
 - **Ctrl+O = Import**: Keyboard shortcut for file import dialog.
+
+## 2026-03-27 — Session 9: Smooth Shading + Hole-Aware Extrusion
+
+### Hole-Aware Sketch Extrusion (SolidWorks-Style)
+- **Parent face boundary included in region computation**: Drawing a shape on a face now creates 2+ regions — the inner shape(s) AND the outer area (face minus shapes). Previously only inner shapes were selectable.
+- **Outer region extrusion punches holes**: Extruding the outer region creates inner side walls for hole boundaries (reversed winding). The hole becomes a true opening in the extruded geometry.
+- **`stored_holes` on Mesh**: Faces created with `add_polygon_face_with_holes_flush` now store their hole boundaries. `extrude_face` and `cut_face` read these to create inner walls.
+- **`split_parent_face` handles holes**: When splitting the parent face after extrusion, the full region polygon (outer + holes) is subtracted, producing correct remainder geometry.
+- **Undo system updated**: `MeshSnapshot` now includes `stored_holes` for correct undo/redo of hole-aware operations.
+- **Sketch stores parent face boundary**: `Sketch::new()` receives the parent face boundary in 2D. The `RegionSolver` uses it as the outermost contour when computing regions.
+
+### The Big One: Crease-Angle Smooth Shading
+- **New `apply_smooth_shading(30°)` system** in `mesh/smooth.rs`. Three-phase pipeline:
+  1. **Face merging**: Union-find over edge adjacency. Adjacent triangles with normals within 30° get the same `face_id`. A cylinder barrel → 1 face. A box → 6 faces. A sphere → 1 face.
+  2. **Normal averaging**: For each vertex, averages geometric normals of all adjacent triangles within the crease angle. Cylinders get smooth Gouraud-interpolated normals. Sharp edges (>30°) stay sharp automatically.
+  3. **Vertex welding**: Merges duplicate vertices by (position, face_id, normal). ~6x vertex reduction for imported meshes.
+- **Called automatically on import**: `from_triangles()` applies smooth shading before returning. Every STL/OBJ import benefits.
+- **Edge rendering improved for free**: Face merging means fewer face boundaries → edge lines only appear at real geometric creases, not at every triangle boundary.
+- **Face selection improved for free**: Clicking a surface selects the entire logical face (e.g., whole cylinder barrel), not one triangle.
+- **Primitive operations untouched**: Cube, extrude, cut, inset keep their manually-set normals and face_ids.
+
+### Why This Matters
+Before: imported cylinder = faceted octagon. Sphere = disco ball. Every curved surface screamed "wrong."
+After: imported cylinder = smooth cylinder. Sphere = smooth sphere. Looks like a real CAD tool.
+
+## 2026-03-27 — Session 10: Deep CAD Audit + Kernel Decision
+
+### Full Codebase Audit vs. SolidWorks
+Systematic audit of every renderer and geometry file, comparing our approach to how professional CAD systems (SolidWorks/Parasolid, ACIS, OpenCASCADE) work internally.
+
+### Rendering Fixes
+- **Blinn-Phong specular highlights**: Surfaces now have metallic/plastic shine (was flat matte)
+- **Linear lighting (gamma correction)**: All lighting math now in linear color space with sRGB↔linear conversion. Colors are physically correct.
+- **Three-light setup**: Key + fill + rim lights for industrial CAD look
+- **Cube winding fix**: Top/bottom face indices had inverted normals (cross product pointed inward)
+- **Preview z-fighting fix**: Base faces offset ±0.001 along normal to prevent z-fighting with underlying mesh
+- **Edge depth bias tuned**: Less aggressive slope_scale, tighter clamp to prevent edge pop-in at shallow angles
+
+### CAD Kernel Decision
+- Evaluated all Rust BREP options: truck (stalled, no fillets), Fornjot (paused), opencascade-rs (viable)
+- **Decision: opencascade-rs** — only option with fillets + robust booleans + STEP I/O
+- CADmium (Rust CAD project) archived partly due to truck limitations — validates our evaluation
+- Architecture: kernel behind trait boundary, current triangle mesh becomes display-only tessellation
+- Updated Phase 9 roadmap with concrete integration plan
+
+### Identified Fundamental Issues
+- PROB-012: No topology (half-edge) — requires O(F×V) for adjacency
+- PROB-013: No parametric surfaces — cylinders always faceted, no fillets possible
+- PROB-014: No feature tree — operations are destructive, no parameter editing
+
+## 2026-03-26 — Session 8: CAD Kernel Research
+
+### Research
+- Deep technical research on how professional CAD systems work internally
+- Documented in RESEARCH.md: BREP architecture, half-edge data structure, Parasolid internals, surface representation, adaptive tessellation, boolean operations, Euler operations, edge rendering algorithms, mesh vs BREP trade-offs, smooth shading
+- Evaluated Rust BREP kernel options: truck-rs (recommended), opencascade-rs, Fornjot
+- Defined progressive migration strategy: short-term mesh fixes → hybrid BREP+mesh → full BREP
+- Key immediate recommendations: smooth normals with crease angles, explicit feature edge storage, polygon offset for edge lines, coplanar face merging
