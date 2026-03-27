@@ -15,7 +15,6 @@ pub mod vertex;
 mod camera;
 mod grid;
 mod gizmo;
-#[allow(dead_code)]
 pub(crate) mod transform_gizmo;
 pub mod mesh;
 mod preview;
@@ -27,6 +26,7 @@ use gpu_state::GpuState;
 use pipeline::MeshPipeline;
 use grid::GridPipeline;
 use gizmo::GizmoPipeline;
+use transform_gizmo::TransformGizmo;
 use preview::PreviewPipeline;
 use sketch_renderer::SketchRenderer;
 use construction_renderer::ConstructionRenderer;
@@ -41,6 +41,7 @@ pub struct Renderer {
     pub mesh_pipeline: MeshPipeline,
     grid: GridPipeline,
     gizmo: GizmoPipeline,
+    pub(crate) transform_gizmo: TransformGizmo,
     preview: PreviewPipeline,
     sketch_renderer: SketchRenderer,
     construction_renderer: ConstructionRenderer,
@@ -64,6 +65,7 @@ impl Renderer {
         let mesh_pipeline = MeshPipeline::new(&gpu.device, &gpu.config, &camera, &mesh, gpu.features);
         let grid = GridPipeline::new(&gpu.device, &gpu.config, &camera);
         let gizmo = GizmoPipeline::new(&gpu.device, &gpu.config, &camera);
+        let transform_gizmo = TransformGizmo::new(&gpu.device, gpu.config.format, gpu_state::MSAA_SAMPLE_COUNT);
         let preview = PreviewPipeline::new(&gpu.device, &gpu.config, &camera);
         let sketch_renderer = SketchRenderer::new(&gpu.device, &gpu.config, &camera);
         let construction_renderer = ConstructionRenderer::new(&gpu.device, &gpu.config, &camera);
@@ -81,6 +83,7 @@ impl Renderer {
             mesh_pipeline,
             grid,
             gizmo,
+            transform_gizmo,
             preview,
             sketch_renderer,
             construction_renderer,
@@ -112,6 +115,8 @@ impl Renderer {
         self.preview.update_camera(&self.gpu.queue, &self.camera);
         self.sketch_renderer.update_camera(&self.gpu.queue, &self.camera);
         self.construction_renderer.update_camera(&self.gpu.queue, &self.camera);
+        let view_proj = self.camera.projection_matrix() * self.camera.view_matrix();
+        self.transform_gizmo.update_uniform(&self.gpu.queue, view_proj, self.camera.distance);
     }
 
     pub fn orbit(&mut self, dx: f32, dy: f32) {
@@ -316,6 +321,19 @@ impl Renderer {
         self.sketch_renderer.append_region_fills(&self.gpu.device, regions, selected_region, plane);
     }
 
+    /// Update 3D overlays: measurement lines, edge highlights.
+    pub fn update_overlays(
+        &mut self,
+        measurement: Option<&crate::ui::Measurement>,
+        measure_first: Option<[f32; 3]>,
+        selected_edge: Option<([f32; 3], [f32; 3])>,
+    ) {
+        let eye = self.camera.eye();
+        self.sketch_renderer.update_overlays(
+            &self.gpu.device, eye, measurement, measure_first, selected_edge,
+        );
+    }
+
     // --- Construction geometry ---
 
     pub fn update_construction(&mut self, cg: &crate::construction::ConstructionGeometry) {
@@ -324,6 +342,20 @@ impl Renderer {
 
     pub fn clear_sketch(&mut self) {
         self.sketch_renderer.clear();
+    }
+
+    /// Update transform gizmo position to the centroid of the selected face.
+    pub fn update_transform_gizmo(&mut self) {
+        if let Some(face_id) = self.selected_face {
+            if let Some(centroid) = self.mesh.face_centroid(face_id) {
+                self.transform_gizmo.position = centroid;
+                self.transform_gizmo.visible = true;
+                let view_proj = self.camera.projection_matrix() * self.camera.view_matrix();
+                self.transform_gizmo.update_uniform(&self.gpu.queue, view_proj, self.camera.distance);
+            }
+        } else {
+            self.transform_gizmo.visible = false;
+        }
     }
 
     pub fn view_proj(&self) -> glam::Mat4 {
@@ -506,8 +538,8 @@ impl Renderer {
                     view: &msaa_view,
                     resolve_target: Some(&surface_view),
                     ops: wgpu::Operations {
-                        // SolidWorks-style light gray background (model pops against it)
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.76, g: 0.78, b: 0.82, a: 1.0 }),
+                        // Dark background (Fusion 360 / SolidWorks dark mode style)
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.18, g: 0.19, b: 0.21, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -536,6 +568,7 @@ impl Renderer {
             }
             self.preview.draw(&mut pass);
             self.sketch_renderer.draw(&mut pass);
+            self.transform_gizmo.draw(&mut pass);
             self.gizmo.draw(&mut pass, self.gpu.config.width, self.gpu.config.height);
         }
 

@@ -1,6 +1,13 @@
 #[derive(PartialEq, Clone, Copy)]
+pub enum RightPanelTab {
+    Inspector,
+    Agent,
+}
+
+#[derive(PartialEq, Clone, Copy)]
 pub enum Tool {
     Select,
+    Move,
     Extrude,
     Cut,
     Inset,
@@ -99,6 +106,16 @@ pub struct UiState {
     pub construction_selected: Option<crate::construction::ConstructionId>,
     pub show_construction_planes: bool,
     pub show_construction_axes: bool,
+    // Right panel inspector
+    pub right_panel_tab: RightPanelTab,
+    pub face_centroid: Option<[f32; 3]>,
+    pub face_planar: Option<bool>,
+    pub mesh_bbox_min: Option<[f32; 3]>,
+    pub mesh_bbox_max: Option<[f32; 3]>,
+    // Transform sliders for move operation
+    pub move_x: f32,
+    pub move_y: f32,
+    pub move_z: f32,
 }
 
 pub struct ChatMessage {
@@ -201,6 +218,14 @@ impl UiState {
             construction_selected: None,
             show_construction_planes: true,
             show_construction_axes: true,
+            right_panel_tab: RightPanelTab::Inspector,
+            face_centroid: None,
+            face_planar: None,
+            mesh_bbox_min: None,
+            mesh_bbox_max: None,
+            move_x: 0.0,
+            move_y: 0.0,
+            move_z: 0.0,
         }
     }
 
@@ -256,6 +281,7 @@ impl UiState {
                     // Operations
                     let active_ops: &[(Tool, &str)] = &[
                         (Tool::Select,  "Select"),
+                        (Tool::Move,    "Move"),
                         (Tool::Extrude, "Extrude"),
                         (Tool::Cut,     "Cut"),
                         (Tool::Inset,   "Inset"),
@@ -518,6 +544,16 @@ impl UiState {
                         ui.add_space(4.0);
                         ui.label(egui::RichText::new("Select a face, then inset").weak().size(9.0));
                     }
+                    Tool::Move => {
+                        ui.label(egui::RichText::new("Move (Translate)").strong().size(11.0));
+                        ui.separator();
+                        if self.selected_face_id.is_some() {
+                            ui.label(egui::RichText::new("Drag an axis arrow to move").weak().size(9.0));
+                            ui.label(egui::RichText::new("the selected face.").weak().size(9.0));
+                        } else {
+                            ui.label(egui::RichText::new("Select a face first.").weak().size(9.0));
+                        }
+                    }
                     Tool::Measure => {
                         ui.label(egui::RichText::new("Measure").strong().size(11.0).color(egui::Color32::from_rgb(255, 200, 50)));
                         ui.add_space(4.0);
@@ -610,7 +646,8 @@ impl UiState {
                 ui.horizontal_centered(|ui| {
                     // Active tool
                     let tool_name = match self.active_tool {
-                        Tool::Select => "Select", Tool::Extrude => "Extrude",
+                        Tool::Select => "Select", Tool::Move => "Move",
+                        Tool::Extrude => "Extrude",
                         Tool::Cut => "Cut", Tool::Inset => "Inset",
                         Tool::Fillet => "Fillet", Tool::Line => "Line",
                         Tool::Rect => "Rect", Tool::Circle => "Circle",

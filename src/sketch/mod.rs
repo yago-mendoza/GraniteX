@@ -274,6 +274,15 @@ impl Sketch {
         lines
     }
 
+    /// Get 3D line segments for a specific entity (for highlighting).
+    pub fn entity_lines_3d(&self, index: usize) -> Vec<(Vec3, Vec3)> {
+        let mut lines = Vec::new();
+        if let Some(entity) = self.entities.get(index) {
+            self.entity_to_lines_3d(entity, &mut lines);
+        }
+        lines
+    }
+
     /// Get construction line segments (for rendering in different color).
     pub fn construction_lines_3d(&self) -> Vec<(Vec3, Vec3)> {
         let mut lines = Vec::new();

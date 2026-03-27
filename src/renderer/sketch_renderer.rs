@@ -32,6 +32,8 @@ pub struct SketchRenderer {
     num_vertices: u32,
     region_fill_buffer: Option<wgpu::Buffer>,
     num_region_vertices: u32,
+    overlay_buffer: Option<wgpu::Buffer>,
+    num_overlay_vertices: u32,
 }
 
 impl SketchRenderer {
@@ -129,6 +131,7 @@ impl SketchRenderer {
             pipeline, uniform_buffer, bind_group,
             vertex_buffer: None, num_vertices: 0,
             region_fill_buffer: None, num_region_vertices: 0,
+            overlay_buffer: None, num_overlay_vertices: 0,
         }
     }
 
@@ -172,6 +175,15 @@ impl SketchRenderer {
         if let Some(start) = sketch.pending_start {
             let p3d = sketch.to_3d(start);
             self.push_dot_on_plane(&mut verts, p3d, normal, dot_size * 1.5, preview_color);
+        }
+
+        // Selected entity highlight — render on top in magenta, thicker
+        if let Some(idx) = sketch.selected_entity {
+            let highlight_color = [1.0, 0.2, 0.8]; // magenta
+            let highlight_width = line_width * 2.5;
+            for (p0, p1) in sketch.entity_lines_3d(idx) {
+                self.push_line_on_plane(&mut verts, p0, p1, normal, highlight_width, highlight_color);
+            }
         }
 
         // Snap indicator — show the snap target the cursor is near
@@ -376,11 +388,104 @@ impl SketchRenderer {
         }
     }
 
+    /// Build a camera-facing (billboard) line quad for 3D overlay rendering.
+    fn push_line_billboard(verts: &mut Vec<SketchVertex>, p0: Vec3, p1: Vec3, camera_eye: Vec3, width: f32, color: [f32; 3]) {
+        let line_dir = (p1 - p0).normalize_or_zero();
+        if line_dir.length_squared() < 1e-8 { return; }
+
+        let mid = (p0 + p1) * 0.5;
+        let to_cam = (camera_eye - mid).normalize_or_zero();
+        let right = line_dir.cross(to_cam).normalize_or_zero() * width;
+        if right.length_squared() < 1e-10 { return; }
+
+        let sv = |pos: Vec3| SketchVertex { position: pos.into(), color, alpha: 1.0, _pad: 0.0 };
+        let a = p0 - right;
+        let b = p0 + right;
+        let c = p1 + right;
+        let d = p1 - right;
+        verts.extend_from_slice(&[sv(a), sv(b), sv(c), sv(a), sv(c), sv(d)]);
+    }
+
+    /// Build a camera-facing dot for 3D overlay rendering.
+    fn push_dot_billboard(verts: &mut Vec<SketchVertex>, pos: Vec3, camera_eye: Vec3, size: f32, color: [f32; 3]) {
+        let to_cam = (camera_eye - pos).normalize_or_zero();
+        if to_cam.length_squared() < 1e-8 { return; }
+
+        // Build orthonormal frame facing camera
+        let up = if to_cam.dot(Vec3::Y).abs() < 0.99 {
+            to_cam.cross(Vec3::Y).normalize_or_zero()
+        } else {
+            to_cam.cross(Vec3::X).normalize_or_zero()
+        };
+        let right = to_cam.cross(up).normalize_or_zero();
+
+        let sv = |p: Vec3| SketchVertex { position: p.into(), color, alpha: 1.0, _pad: 0.0 };
+        let segments = 8;
+        for i in 0..segments {
+            let a0 = std::f32::consts::TAU * i as f32 / segments as f32;
+            let a1 = std::f32::consts::TAU * (i + 1) as f32 / segments as f32;
+            let p0 = pos + up * (size * a0.cos()) + right * (size * a0.sin());
+            let p1 = pos + up * (size * a1.cos()) + right * (size * a1.sin());
+            verts.extend_from_slice(&[sv(pos), sv(p0), sv(p1)]);
+        }
+    }
+
+    /// Update 3D overlay geometry: measurement lines, edge highlights.
+    /// These use billboard quads (face the camera) instead of plane-based quads.
+    pub fn update_overlays(
+        &mut self,
+        device: &wgpu::Device,
+        camera_eye: Vec3,
+        measurement: Option<&crate::ui::Measurement>,
+        measure_first: Option<[f32; 3]>,
+        selected_edge: Option<([f32; 3], [f32; 3])>,
+    ) {
+        let mut verts = Vec::new();
+
+        // Measurement line + endpoints
+        if let Some(m) = measurement {
+            let pa = Vec3::from(m.point_a);
+            let pb = Vec3::from(m.point_b);
+            let line_color = [0.0, 0.9, 1.0]; // cyan
+            let dot_color = [1.0, 1.0, 0.0];  // yellow
+            Self::push_line_billboard(&mut verts, pa, pb, camera_eye, 0.004, line_color);
+            Self::push_dot_billboard(&mut verts, pa, camera_eye, 0.01, dot_color);
+            Self::push_dot_billboard(&mut verts, pb, camera_eye, 0.01, dot_color);
+        } else if let Some(first) = measure_first {
+            // Show first point as pulsing orange dot
+            let p = Vec3::from(first);
+            Self::push_dot_billboard(&mut verts, p, camera_eye, 0.012, [1.0, 0.6, 0.0]);
+        }
+
+        // Selected edge highlight
+        if let Some((a, b)) = selected_edge {
+            let pa = Vec3::from(a);
+            let pb = Vec3::from(b);
+            let edge_color = [1.0, 0.4, 0.0]; // bright orange
+            Self::push_line_billboard(&mut verts, pa, pb, camera_eye, 0.006, edge_color);
+            Self::push_dot_billboard(&mut verts, pa, camera_eye, 0.008, edge_color);
+            Self::push_dot_billboard(&mut verts, pb, camera_eye, 0.008, edge_color);
+        }
+
+        self.num_overlay_vertices = verts.len() as u32;
+        if verts.is_empty() {
+            self.overlay_buffer = None;
+        } else {
+            self.overlay_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Overlay Vertices"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            }));
+        }
+    }
+
     pub fn clear(&mut self) {
         self.vertex_buffer = None;
         self.num_vertices = 0;
         self.region_fill_buffer = None;
         self.num_region_vertices = 0;
+        self.overlay_buffer = None;
+        self.num_overlay_vertices = 0;
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
@@ -400,6 +505,15 @@ impl SketchRenderer {
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.set_vertex_buffer(0, vb.slice(..));
                 pass.draw(0..self.num_vertices, 0..1);
+            }
+        }
+        // 3D overlays: measurement lines, edge highlights (camera-facing billboards)
+        if let Some(ref ob) = self.overlay_buffer {
+            if self.num_overlay_vertices > 0 {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, ob.slice(..));
+                pass.draw(0..self.num_overlay_vertices, 0..1);
             }
         }
     }

@@ -30,6 +30,9 @@ pub(super) struct InputState {
     pub(super) operation_dragging: bool,
     pub(super) drag_start_y: f64,
     pub(super) drag_accumulated: f32,
+    /// Transform gizmo dragging state.
+    pub(super) gizmo_dragging: bool,
+    pub(super) gizmo_drag_snapshot: Option<crate::commands::MeshSnapshot>,
 }
 
 pub(super) struct App {
@@ -42,6 +45,10 @@ pub(super) struct App {
     pub(super) sketch: Option<Sketch>,
     pub(super) history: CommandHistory,
     pub(super) construction: ConstructionGeometry,
+    // Auto-save
+    pub(super) auto_save_interval: std::time::Duration,
+    pub(super) last_auto_save: std::time::Instant,
+    pub(super) auto_save_path: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -56,6 +63,9 @@ impl App {
             sketch: None,
             history: CommandHistory::new(),
             construction: ConstructionGeometry::new(),
+            auto_save_interval: std::time::Duration::from_secs(60),
+            last_auto_save: std::time::Instant::now(),
+            auto_save_path: None,
         }
     }
 
@@ -389,6 +399,13 @@ impl App {
             }
         }
 
+        // 3D overlays: measurement line + edge highlight (billboard quads)
+        renderer.update_overlays(
+            self.ui.active_measurement.as_ref(),
+            self.ui.measure_first_point,
+            self.ui.selected_edge,
+        );
+
         // View presets
         if let Some(preset) = self.ui.view_request.take() {
             use std::f32::consts::*;
@@ -439,6 +456,15 @@ impl App {
                 self.ui.selected_face_normal = None;
                 self.ui.selected_face_area = None;
             }
+        }
+
+        // Transform gizmo visibility: show only when Select/Move tool + face selected + not in sketch
+        let show_gizmo = matches!(self.ui.active_tool, Tool::Select | Tool::Move)
+            && renderer.selected_face.is_some()
+            && self.sketch.is_none();
+        renderer.transform_gizmo.visible = show_gizmo;
+        if show_gizmo {
+            renderer.update_transform_gizmo();
         }
 
         // Cursor world position (intersect ray with XZ plane at y=0)
@@ -588,6 +614,16 @@ impl App {
         }
     }
 
+    fn save_project_to(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        if let Some(r) = &self.renderer {
+            let (target, dist, yaw, pitch) = r.camera_state();
+            let camera_data = crate::project::CameraData { target, distance: dist, yaw, pitch };
+            crate::project::save_project(path, &r.mesh, camera_data)
+        } else {
+            anyhow::bail!("No renderer available")
+        }
+    }
+
     fn save_project(&mut self, force_dialog: bool) {
         let path = if force_dialog || self.ui.current_project_path.is_none() {
             rfd::FileDialog::new()
@@ -599,19 +635,16 @@ impl App {
         };
 
         if let Some(path) = path {
-            if let Some(r) = &self.renderer {
-                let (target, dist, yaw, pitch) = r.camera_state();
-                let camera_data = crate::project::CameraData { target, distance: dist, yaw, pitch };
-                match crate::project::save_project(&path, &r.mesh, camera_data) {
-                    Ok(()) => {
-                        self.ui.dirty = false;
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        self.ui.toasts.push(crate::ui::Toast::new(format!("Saved {}", name)));
-                        self.ui.current_project_path = Some(path);
-                    }
-                    Err(e) => {
-                        self.ui.toasts.push(crate::ui::Toast::new(format!("Save failed: {}", e)));
-                    }
+            match self.save_project_to(&path) {
+                Ok(()) => {
+                    self.ui.dirty = false;
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    self.ui.toasts.push(crate::ui::Toast::new(format!("Saved {}", name)));
+                    self.ui.current_project_path = Some(path.clone());
+                    self.auto_save_path = Some(path);
+                }
+                Err(e) => {
+                    self.ui.toasts.push(crate::ui::Toast::new(format!("Save failed: {}", e)));
                 }
             }
         }
