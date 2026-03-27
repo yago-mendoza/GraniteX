@@ -45,8 +45,9 @@ impl App {
                                             self.ui.extrude_request = Some(dist);
                                         }
                                         Tool::Cut => {
-                                            self.ui.cut_depth = dist.abs();
-                                            self.ui.cut_request = Some(dist.abs());
+                                            let depth = dist.max(0.0);
+                                            self.ui.cut_depth = depth;
+                                            self.ui.cut_request = Some(depth);
                                         }
                                         _ => {}
                                     }
@@ -138,7 +139,7 @@ impl App {
                     // Update UI slider to match drag
                     match self.ui.active_tool {
                         Tool::Extrude => self.ui.extrude_distance = self.input.drag_accumulated,
-                        Tool::Cut => self.ui.cut_depth = self.input.drag_accumulated.abs(),
+                        Tool::Cut => self.ui.cut_depth = self.input.drag_accumulated.max(0.0),
                         _ => {}
                     }
                 }
@@ -207,6 +208,10 @@ impl App {
                                 self.sketch = None;
                             }
                         }
+                        // Clear measurement state
+                        self.ui.measure_first_point = None;
+                        self.ui.active_measurement = None;
+                        self.ui.selected_edge = None;
                         self.ui.active_tool = Tool::Select;
                     }
 

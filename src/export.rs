@@ -5,16 +5,18 @@ use std::io::Write;
 use crate::renderer::Mesh;
 
 pub fn export_stl(mesh: &Mesh, path: &Path) -> anyhow::Result<()> {
-    let mut file = std::fs::File::create(path)?;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
 
     // Binary STL: 80-byte header + u32 triangle count + triangles
-    let header = [0u8; 80];
+    let mut header = [0u8; 80];
+    let label = b"GraniteX STL Export";
+    header[..label.len()].copy_from_slice(label);
     file.write_all(&header)?;
 
     let tri_count = (mesh.indices.len() / 3) as u32;
     file.write_all(&tri_count.to_le_bytes())?;
 
-    for tri in mesh.indices.chunks(3) {
+    for tri in mesh.indices.chunks_exact(3) {
         let v0 = glam::Vec3::from(mesh.vertices[tri[0] as usize].position);
         let v1 = glam::Vec3::from(mesh.vertices[tri[1] as usize].position);
         let v2 = glam::Vec3::from(mesh.vertices[tri[2] as usize].position);
@@ -37,7 +39,7 @@ pub fn export_stl(mesh: &Mesh, path: &Path) -> anyhow::Result<()> {
 }
 
 pub fn export_obj(mesh: &Mesh, path: &Path) -> anyhow::Result<()> {
-    let mut file = std::fs::File::create(path)?;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
 
     writeln!(file, "# GraniteX OBJ export")?;
 
@@ -52,7 +54,7 @@ pub fn export_obj(mesh: &Mesh, path: &Path) -> anyhow::Result<()> {
     }
 
     // Write faces (OBJ is 1-indexed)
-    for tri in mesh.indices.chunks(3) {
+    for tri in mesh.indices.chunks_exact(3) {
         let i0 = tri[0] + 1;
         let i1 = tri[1] + 1;
         let i2 = tri[2] + 1;

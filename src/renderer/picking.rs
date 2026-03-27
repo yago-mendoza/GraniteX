@@ -184,6 +184,15 @@ pub fn pick_edge(
         }
     }
 
+    // Compute the depth of the nearest face at the click position for occlusion
+    let face_hit = pick_face(screen_x, screen_y, screen_width, screen_height, view_proj, mesh);
+    let max_depth = face_hit.map(|h| h.distance + 0.1).unwrap_or(f32::MAX);
+
+    // Compute camera position from inverse view_proj
+    let inv_vp = view_proj.inverse();
+    let cam_h = inv_vp * Vec4::new(0.0, 0.0, 0.0, 1.0);
+    let cam_pos = cam_h.truncate() / cam_h.w;
+
     let mut best: Option<(f32, Vec3, Vec3)> = None;
 
     for info in edge_faces.values() {
@@ -192,6 +201,11 @@ pub fn pick_edge(
 
         let p0 = Vec3::from(info.pa);
         let p1 = Vec3::from(info.pb);
+
+        // Depth check: edge midpoint should be closer than the face behind it
+        let mid = (p0 + p1) * 0.5;
+        let edge_dist = (mid - cam_pos).length();
+        if edge_dist > max_depth { continue; }
 
         let Some((sx0, sy0)) = project(p0) else { continue };
         let Some((sx1, sy1)) = project(p1) else { continue };

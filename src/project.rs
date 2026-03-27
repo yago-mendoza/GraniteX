@@ -78,6 +78,14 @@ pub fn load_project(path: &Path) -> Result<(Mesh, CameraData)> {
     let json = std::fs::read_to_string(path)?;
     let project: ProjectFile = serde_json::from_str(&json)?;
 
+    if project.version != 1 {
+        anyhow::bail!("Unsupported project version {} (expected 1)", project.version);
+    }
+
+    if project.mesh.vertices.is_empty() || project.mesh.indices.is_empty() {
+        anyhow::bail!("Project file contains empty mesh");
+    }
+
     let vertices: Vec<Vertex> = project.mesh.vertices.iter().map(|v| Vertex {
         position: v.position,
         normal: v.normal,

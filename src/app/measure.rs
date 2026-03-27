@@ -14,7 +14,10 @@ impl App {
             &renderer.mesh,
         );
 
-        let Some(pick) = result else { return };
+        let Some(pick) = result else {
+            self.ui.toasts.push(crate::ui::Toast::new("Click on the model surface".into()));
+            return;
+        };
         let hit = [pick.hit_point.x, pick.hit_point.y, pick.hit_point.z];
 
         if let Some(first) = self.ui.measure_first_point {
