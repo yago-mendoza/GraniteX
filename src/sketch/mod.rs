@@ -169,9 +169,10 @@ impl Sketch {
         }
     }
 
-    pub fn add_rect(&mut self, corner1: Point2D, corner2: Point2D) {
+    /// Returns false if rectangle is too small (degenerate).
+    pub fn add_rect(&mut self, corner1: Point2D, corner2: Point2D) -> bool {
         if (corner1.x - corner2.x).abs() < 0.005 || (corner1.y - corner2.y).abs() < 0.005 {
-            return;
+            return false;
         }
         let min_x = corner1.x.min(corner2.x);
         let max_x = corner1.x.max(corner2.x);
@@ -187,12 +188,18 @@ impl Sketch {
         self.entities.push(SketchEntity::Line { start: br, end: tr });
         self.entities.push(SketchEntity::Line { start: tr, end: tl });
         self.entities.push(SketchEntity::Line { start: tl, end: bl });
+        self.region_solver.mark_dirty();
+        true
     }
 
-    pub fn add_circle(&mut self, center: Point2D, radius: f32) {
+    /// Returns false if radius is too small (degenerate).
+    pub fn add_circle(&mut self, center: Point2D, radius: f32) -> bool {
         if radius > 0.005 {
             self.entities.push(SketchEntity::Circle { center, radius });
             self.region_solver.mark_dirty();
+            true
+        } else {
+            false
         }
     }
 
@@ -210,22 +217,23 @@ impl Sketch {
         self.selected_region = None;
         self.selected_entity = None;
 
-        // Restore pending_start to the last entity's endpoint so the chain
-        // stays connected. If no entities remain, reset to idle state.
-        if let Some(last) = self.entities.last() {
-            match last {
-                SketchEntity::Line { end, .. } => {
-                    self.pending_start = Some(*end);
-                }
-                SketchEntity::Circle { .. }
-                | SketchEntity::ConstructionLine { .. } => {
-                    self.pending_start = None;
-                    self.chain_start = None;
-                }
-            }
+        // Restore pending_start to the last non-construction entity's endpoint
+        // so the chain stays connected. Construction lines don't participate in chains.
+        // BUG 11 fix: skip construction lines when restoring chain state.
+        let last_line = self.entities.iter().rev()
+            .find(|e| matches!(e, SketchEntity::Line { .. }));
+        if let Some(SketchEntity::Line { end, .. }) = last_line {
+            self.pending_start = Some(*end);
         } else {
             self.pending_start = None;
             self.chain_start = None;
+        }
+        // If the very last entity is a Circle or ConstructionLine, also reset chain
+        if let Some(last) = self.entities.last() {
+            if matches!(last, SketchEntity::Circle { .. }) {
+                self.pending_start = None;
+                self.chain_start = None;
+            }
         }
     }
 

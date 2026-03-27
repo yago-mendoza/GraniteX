@@ -1,6 +1,6 @@
 # GraniteX — Known Problems & Technical Debt
 
-Last updated: 2026-03-27
+Last updated: 2026-03-27 (reviewed Session 12 — no new problems)
 
 ## Architectural Limitation
 
@@ -11,6 +11,43 @@ Last updated: 2026-03-27
 **Long-term fix:** Migrate to `opencascade-rs` (Rust bindings for OpenCASCADE). Research (2026-03-27) evaluated all Rust BREP options: `truck` (stalled since Sept 2024, no fillets), Fornjot (paused, experimental), opencascade-rs (only viable option with fillets + robust booleans + STEP export). CADmium project was archived partly because truck lacked these capabilities.
 **Architecture:** Kernel behind a trait boundary so it can be swapped in the future. Current triangle mesh becomes display-only tessellation. See RESEARCH.md for full evaluation.
 **Short-term mitigation:** `stored_boundaries` HashMap tracks face ordering. `triangulate_3d_polygon` uses earcutr. `split_parent_face` uses geo boolean operations. These work for 90% of cases.
+
+## Fixed Issues (2026-03-27 Deep Audit)
+
+### PROB-015: Sketch undo desyncs chain state
+**Status:** FIXED (2026-03-27)
+**Description:** After Ctrl+Z removed a sketch entity, `pending_start` still pointed to the removed line's endpoint. Next click created a disconnected line floating in space.
+**Resolution:** `undo_last()` now restores `pending_start` to the previous entity's endpoint, or resets to idle if no entities remain.
+
+### PROB-016: H/V inference breaks Rect and Circle tools
+**Status:** FIXED (2026-03-27)
+**Description:** `resolve_cursor()` applied horizontal/vertical inference to ALL tools when `pending_start` existed. For Rect, this could snap corner2 to be collinear with corner1 → zero-height rect → silently rejected. For Circle, it warped the radius.
+**Resolution:** Added `line_mode` parameter to `resolve_cursor()`. H/V inference only activates for the Line tool.
+
+### PROB-017: Circles have no edge snap points
+**Status:** FIXED (2026-03-27)
+**Description:** `Circle.endpoints()` only returned center. Impossible to snap lines to circle edges — fundamental connectivity break.
+**Resolution:** `endpoints()` now returns center + 4 quadrant points. Added circumference snap (nearest point on circle) as lower-priority snap target. New SnapType variants: Quadrant, Circumference.
+
+### PROB-018: Cut drag V-shaped behavior
+**Status:** FIXED (2026-03-27)
+**Description:** Cut used `.abs()` on drag distance, so dragging below start point INCREASED depth instead of reducing to 0. User couldn't reduce cut depth by dragging back down.
+**Resolution:** Changed to `.max(0.0)` — drag up = deeper, drag down = shallower, below start = 0.
+
+### PROB-019: Coplanar-merged faces corrupt future extrudes
+**Status:** FIXED (2026-03-27)
+**Description:** After extrude, side walls merged into adjacent faces via `find_coplanar_adjacent_face`. The merged face kept a stale `stored_boundary` from before the merge. Future extrudes on these faces used wrong boundary (convex hull of L-shape instead of actual shape).
+**Resolution:** `create_side_walls` now invalidates `stored_boundaries` for merged faces, forcing `face_boundary_corners()` to recompute via angle-sort (correct for convex merged faces).
+
+### PROB-020: Construction plane sketch priority
+**Status:** FIXED (2026-03-27)
+**Description:** When a construction plane was selected in UI, clicking a drawing tool still prioritized mesh face picking. If the cube overlapped the plane, the user could never start a sketch on the plane.
+**Resolution:** If a construction plane is pre-selected in UI, it now takes priority over mesh face picking. User intent (selecting the plane) is respected.
+
+### PROB-021: Regions outside face boundary selectable
+**Status:** FIXED (2026-03-27)
+**Description:** If a sketch contour extended beyond the face boundary, `compute_regions` created an "uncovered" region floating outside the face. User could select it → extrude created geometry disconnected from the mesh.
+**Resolution:** `select_region_at()` now checks that the region centroid is inside the parent face boundary. Regions outside the face are rejected.
 
 ## Active Issues (2026-03-27 Audit)
 
@@ -33,6 +70,20 @@ Last updated: 2026-03-27
 **Status:** IMPROVED (2026-03-27)
 **Description:** Edge rendering depth bias `constant:-4, slope_scale:-2.0, clamp:-0.01` was device-dependent and too aggressive at shallow angles.
 **Resolution:** Adjusted to `constant:-8, slope_scale:-1.5, clamp:-0.0001` for better cross-angle behavior.
+
+### PROB-015: Face splitting fragility
+**Status:** HARDENED (2026-03-27)
+**Description:** `split_parent_face` used geo::difference which can: (a) panic on degenerate inputs, (b) produce tiny sliver polygons, (c) delete the parent face without creating remainder when region covers 100% of parent.
+**Resolution:** Added 3 robustness guards:
+- `catch_unwind` around geo::difference (recovers from panics)
+- Area ratio check: skip split if region covers >95% of parent
+- Degenerate sliver filter: skip faces with area < 1e-6
+- Remainder area validation: skip if remainder < 1% of parent
+
+### PROB-016: Cylindrical detection heuristic
+**Status:** FIXED (2026-03-27)
+**Description:** `is_cylindrical = n > 4` wrongly treated pentagons, hexagons, and L-shapes as cylinders → smooth normals instead of flat faces → no hard edges on polygon extrusions.
+**Resolution:** Changed to `n > 16 AND all_corners_equidistant_from_center(5%)`. Only actual tessellated circles get smooth normals now.
 
 ### PROB-012: No real topology (half-edge)
 **Status:** OPEN — blocked on kernel migration

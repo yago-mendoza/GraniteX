@@ -148,7 +148,7 @@ impl RegionSolver {
 /// A contour is either:
 ///   - A circle (tessellated to polygon)
 ///   - A chain of connected lines that closes back to its start
-fn extract_contours(entities: &[SketchEntity]) -> Vec<Contour> {
+pub(crate) fn extract_contours(entities: &[SketchEntity]) -> Vec<Contour> {
     let mut contours = Vec::new();
     let mut used = vec![false; entities.len()];
 
@@ -228,7 +228,7 @@ fn extract_contours(entities: &[SketchEntity]) -> Vec<Contour> {
 
 /// Compute all distinct regions from a set of closed contours.
 /// Uses geo boolean operations for polygon overlay.
-fn compute_regions(contours: &[Contour]) -> Vec<SketchRegion> {
+pub(crate) fn compute_regions(contours: &[Contour]) -> Vec<SketchRegion> {
     if contours.is_empty() {
         return Vec::new();
     }

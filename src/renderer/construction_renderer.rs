@@ -32,6 +32,11 @@ pub struct ConstructionRenderer {
     bind_group: wgpu::BindGroup,
     vertex_buffer: Option<wgpu::Buffer>,
     num_vertices: u32,
+    // BUG 3 fix: track previous state to avoid re-creating buffer every frame
+    prev_selected: Option<crate::construction::ConstructionId>,
+    prev_hovered: Option<crate::construction::ConstructionId>,
+    prev_camera_distance: f32,
+    prev_visibility: u8, // bitmask: bit 0 = planes visible, bit 1 = axes visible
 }
 
 impl ConstructionRenderer {
@@ -129,6 +134,8 @@ impl ConstructionRenderer {
         Self {
             pipeline, uniform_buffer, bind_group,
             vertex_buffer: None, num_vertices: 0,
+            prev_selected: None, prev_hovered: None,
+            prev_camera_distance: 0.0, prev_visibility: 0xFF,
         }
     }
 
@@ -138,7 +145,24 @@ impl ConstructionRenderer {
     }
 
     /// Rebuild vertex buffer from construction geometry state.
+    /// BUG 3 fix: skip rebuild if state hasn't changed since last frame.
     pub fn update(&mut self, device: &wgpu::Device, cg: &ConstructionGeometry, camera_distance: f32) {
+        let vis = (cg.planes.iter().any(|p| p.visible) as u8)
+            | ((cg.axes.iter().any(|a| a.visible) as u8) << 1);
+        let dist_changed = (camera_distance - self.prev_camera_distance).abs() > 0.01;
+
+        if cg.selected == self.prev_selected
+            && cg.hovered == self.prev_hovered
+            && !dist_changed
+            && vis == self.prev_visibility
+        {
+            return; // nothing changed
+        }
+        self.prev_selected = cg.selected;
+        self.prev_hovered = cg.hovered;
+        self.prev_camera_distance = camera_distance;
+        self.prev_visibility = vis;
+
         let extent = (camera_distance * 0.6).clamp(0.5, 10.0);
         let line_width = (camera_distance * 0.002).clamp(0.002, 0.03);
         let edge_width = (camera_distance * 0.001).clamp(0.001, 0.015);
@@ -222,11 +246,13 @@ impl ConstructionRenderer {
         let p1 = origin + direction * extent;
 
         // Build a camera-independent width by using a perpendicular in world space
+        // BUG 5 fix: use normalize_or_zero to avoid NaN with near-degenerate directions
         let perp = if direction.dot(Vec3::Y).abs() < 0.99 {
-            direction.cross(Vec3::Y).normalize()
+            direction.cross(Vec3::Y).normalize_or_zero()
         } else {
-            direction.cross(Vec3::X).normalize()
+            direction.cross(Vec3::X).normalize_or_zero()
         };
+        if perp.length_squared() < 1e-6 { return; } // degenerate — skip
 
         let right = perp * width;
 

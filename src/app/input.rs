@@ -81,6 +81,10 @@ impl App {
                                         let shift = self.input.modifiers.shift_key();
                                         if let Some(r) = &mut self.renderer {
                                             r.try_select_face_multi(sx, sy, shift);
+                                            // Clear construction selection when a mesh face is selected
+                                            if r.selected_face.is_some() {
+                                                self.ui.construction_selected = None;
+                                            }
                                         }
                                     }
                                 }
@@ -208,10 +212,11 @@ impl App {
                                 self.sketch = None;
                             }
                         }
-                        // Clear measurement state
+                        // Clear all active state
                         self.ui.measure_first_point = None;
                         self.ui.active_measurement = None;
                         self.ui.selected_edge = None;
+                        self.input.operation_dragging = false;
                         self.ui.active_tool = Tool::Select;
                     }
 
@@ -304,6 +309,7 @@ impl App {
 
                     // --- Tool shortcuts (SolidWorks-style) ---
                     Key::Character(c) if !ctrl => {
+                        let prev_tool = self.ui.active_tool;
                         match c.as_str() {
                             "s" => self.ui.active_tool = Tool::Select,
                             "l" => self.ui.active_tool = Tool::Line,
@@ -312,7 +318,9 @@ impl App {
                             "e" => self.ui.active_tool = Tool::Extrude,
                             "x" => self.ui.active_tool = Tool::Cut,
                             "i" => self.ui.active_tool = Tool::Inset,
-                            "f" => self.ui.active_tool = Tool::Fillet,
+                            "f" => {
+                                self.ui.toasts.push(crate::ui::Toast::new("Fillet — not yet implemented".into()));
+                            }
                             "m" => {
                                 self.ui.active_tool = Tool::Measure;
                                 self.ui.measure_first_point = None;
@@ -321,6 +329,13 @@ impl App {
                             "w" => self.ui.show_wireframe = !self.ui.show_wireframe,
                             "g" => self.ui.show_grid = !self.ui.show_grid,
                             _ => {}
+                        }
+                        // Clean up state when switching away from tools
+                        if prev_tool != self.ui.active_tool {
+                            self.input.operation_dragging = false;
+                            if prev_tool == Tool::Measure {
+                                self.ui.measure_first_point = None;
+                            }
                         }
                     }
 
@@ -350,21 +365,41 @@ impl App {
 
     /// Try to select construction geometry (plane or axis) at screen coords.
     /// Returns true if something was selected.
+    /// BUG 7 fix: Only select construction if it's closer than any mesh face.
     fn try_select_construction(&mut self, screen_x: f32, screen_y: f32) -> bool {
         let Some(renderer) = &self.renderer else { return false };
         let (ray_o, ray_d) = renderer.screen_to_ray(screen_x, screen_y);
         let extent = (renderer.camera_distance() * 0.6).clamp(0.5, 10.0);
 
-        if let Some((id, _dist)) = self.construction.pick(ray_o, ray_d, extent) {
+        let construction_hit = self.construction.pick(ray_o, ray_d, extent);
+
+        if let Some((id, cg_dist)) = construction_hit {
+            // Check if a mesh face is closer — if so, let face picking win
+            let view_proj = renderer.view_proj();
+            let mesh_hit = crate::renderer::picking::pick_face(
+                screen_x, screen_y,
+                renderer.gpu_width(), renderer.gpu_height(),
+                view_proj, &renderer.mesh,
+            );
+            if let Some(face_hit) = mesh_hit {
+                if face_hit.distance < cg_dist {
+                    // Mesh is closer — don't select construction
+                    self.ui.construction_selected = None;
+                    return false;
+                }
+            }
+
             self.ui.construction_selected = Some(id);
-            // Deselect mesh face when selecting construction geometry
             if let Some(r) = &mut self.renderer {
                 r.selected_face = None;
                 r.mesh_pipeline.set_selected_face(&r.gpu.queue, None);
             }
             true
         } else {
-            self.ui.construction_selected = None;
+            // BUG 2 fix: Don't clear construction_selected here.
+            // It gets cleared when the user clicks a mesh face (via face selection),
+            // or when they click the feature tree. Clearing here would also clear
+            // when clicking empty space, which breaks the "select plane then draw" workflow.
             false
         }
     }

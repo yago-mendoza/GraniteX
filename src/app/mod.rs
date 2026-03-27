@@ -63,15 +63,19 @@ impl App {
         // Handle file operations before borrowing renderer
         if self.ui.new_scene_request {
             self.ui.new_scene_request = false;
+            // Clear all state BEFORE loading new mesh
+            self.sketch = None;
+            self.history.clear();
+            self.ui.operation_history.clear();
+            self.ui.current_project_path = None;
+            self.ui.active_measurement = None;
+            self.ui.measure_first_point = None;
+            self.ui.selected_edge = None;
+            self.ui.construction_selected = None;
+            self.ui.active_tool = Tool::Select;
+            self.ui.dirty = false;
             if let Some(r) = &mut self.renderer {
                 r.load_mesh(crate::renderer::Mesh::cube());
-                self.history.clear();
-                self.sketch = None;
-                self.ui.operation_history.clear();
-                self.ui.current_project_path = None;
-                self.ui.active_measurement = None;
-                self.ui.measure_first_point = None;
-                self.ui.selected_edge = None;
                 self.ui.toasts.push(crate::ui::Toast::new("New scene".into()));
             }
         }
@@ -138,6 +142,21 @@ impl App {
         for axis in &mut self.construction.axes {
             axis.visible = self.ui.show_construction_axes;
         }
+        // BUG 1 fix: Clear selection if the selected item is now hidden
+        if let Some(id) = self.ui.construction_selected {
+            let hidden = match id {
+                crate::construction::ConstructionId::Plane(i) => {
+                    self.construction.planes.get(i).map(|p| !p.visible).unwrap_or(true)
+                }
+                crate::construction::ConstructionId::Axis(i) => {
+                    self.construction.axes.get(i).map(|a| !a.visible).unwrap_or(true)
+                }
+            };
+            if hidden {
+                self.ui.construction_selected = None;
+                self.construction.selected = None;
+            }
+        }
         renderer.update_construction(&self.construction);
 
         // Extrude — from sketch region (atomic) or from selected face
@@ -181,6 +200,7 @@ impl App {
 
             if success {
                 self.sketch = None;
+                self.ui.dirty = true;
                 self.ui.toasts.push(crate::ui::Toast::new(format!("Extruded {:.2}m", distance)));
                 self.ui.operation_history.push(format!("Extrude {:.2}m", distance));
             }
@@ -223,6 +243,7 @@ impl App {
 
             if success {
                 self.sketch = None;
+                self.ui.dirty = true;
                 self.ui.toasts.push(crate::ui::Toast::new(format!("Cut {:.2}m", depth)));
                 self.ui.operation_history.push(format!("Cut {:.2}m", depth));
             }
@@ -237,6 +258,7 @@ impl App {
                     renderer.selected_face = Some(inner);
                     renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
                     renderer.mesh_pipeline.set_selected_face(&renderer.gpu.queue, Some(inner));
+                    self.ui.dirty = true;
                     self.ui.toasts.push(crate::ui::Toast::new(format!("Inset {:.2}m", amount)));
                     self.sketch = None;
                 }
@@ -358,10 +380,14 @@ impl App {
             let sy = self.input.cursor_pos.1 as f32;
             renderer.update_hover(sx, sy);
 
-            // Construction geometry hover
-            let (ray_o, ray_d) = renderer.screen_to_ray(sx, sy);
-            let extent = (renderer.camera_distance() * 0.6).clamp(0.5, 10.0);
-            self.construction.hovered = self.construction.pick(ray_o, ray_d, extent).map(|(id, _)| id);
+            // Construction geometry hover (skip during active sketching to avoid flicker)
+            if self.sketch.is_none() {
+                let (ray_o, ray_d) = renderer.screen_to_ray(sx, sy);
+                let extent = (renderer.camera_distance() * 0.6).clamp(0.5, 10.0);
+                self.construction.hovered = self.construction.pick(ray_o, ray_d, extent).map(|(id, _)| id);
+            } else {
+                self.construction.hovered = None;
+            }
 
             self.input.cursor_moved = false;
         }

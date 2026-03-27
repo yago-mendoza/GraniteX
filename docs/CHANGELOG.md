@@ -211,6 +211,13 @@ After: imported cylinder = smooth cylinder. Sphere = smooth sphere. Looks like a
 - Turn-based state ownership needed (agent working → UI locked except camera)
 - Feature tree is essential for agent context (not just parametric editing)
 
+### Deep Analysis: 41 Failure Modes Documented
+- Part I (1-15): Architecture failures (TNP, state sync, previews, camera, rendering pipeline)
+- Part II (16-24): Operation-level failures (granularity, hybrid interaction, GPU bugs, validation)
+- Part III (25-41): Lived experience failures (latency, spatial ambiguity, drift, onboarding, units, anaphora, performance, cost)
+- Revised threat ranking: #1 is Dead Air (API latency), not TNP — latency drives users away before architecture bugs surface
+- Key new insights: propose/adjust/confirm pattern, outline-only dimming, "show wrong thing > ask right question", screenshot timing race, canonical state snapshot every turn, spatial reference resolver, performance budgets
+
 ## 2026-03-27 — Session 10: Deep CAD Audit + Kernel Decision
 
 ### Full Codebase Audit vs. SolidWorks
