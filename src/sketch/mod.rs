@@ -111,20 +111,23 @@ impl Sketch {
     }
 
     /// Resolve cursor position through snap + inference pipeline.
-    /// Returns (resolved position, snap target if any, inference type).
-    pub fn resolve_cursor(&self, raw_2d: Point2D, shift_held: bool) -> (Point2D, Option<SnapTarget>, InferenceType) {
+    /// `line_mode`: true only when the Line tool is active. H/V inference is
+    /// harmful for Rect (can zero out a dimension) and Circle (warps radius),
+    /// so it is skipped for those tools.
+    pub fn resolve_cursor(&self, raw_2d: Point2D, shift_held: bool, line_mode: bool) -> (Point2D, Option<SnapTarget>, InferenceType) {
         // Priority 1: Snap targets (endpoints, corners, midpoints, edges)
         if let Some(snap) = self.snap_to_target(raw_2d, 0.05) {
             return (snap.point, Some(snap), InferenceType::None);
         }
 
-        // Priority 2: H/V inference (only when actively drawing a line)
-        if let Some(start) = self.pending_start {
-            let (pos, inf) = Self::infer_constraint(start, raw_2d, shift_held);
-            // Apply grid snap to the inferred position
-            let grid = self.grid_spacing();
-            let pos = if grid > 0.0 { Self::snap_to_grid(pos, grid) } else { pos };
-            return (pos, None, inf);
+        // Priority 2: H/V inference (only when actively drawing a LINE)
+        if line_mode {
+            if let Some(start) = self.pending_start {
+                let (pos, inf) = Self::infer_constraint(start, raw_2d, shift_held);
+                let grid = self.grid_spacing();
+                let pos = if grid > 0.0 { Self::snap_to_grid(pos, grid) } else { pos };
+                return (pos, None, inf);
+            }
         }
 
         // Priority 3: Grid snap
@@ -200,11 +203,30 @@ impl Sketch {
     }
 
     /// Delete the last entity (undo).
+    /// Also restores chain state so the next click connects correctly.
     pub fn undo_last(&mut self) {
         self.entities.pop();
         self.region_solver.mark_dirty();
         self.selected_region = None;
         self.selected_entity = None;
+
+        // Restore pending_start to the last entity's endpoint so the chain
+        // stays connected. If no entities remain, reset to idle state.
+        if let Some(last) = self.entities.last() {
+            match last {
+                SketchEntity::Line { end, .. } => {
+                    self.pending_start = Some(*end);
+                }
+                SketchEntity::Circle { .. }
+                | SketchEntity::ConstructionLine { .. } => {
+                    self.pending_start = None;
+                    self.chain_start = None;
+                }
+            }
+        } else {
+            self.pending_start = None;
+            self.chain_start = None;
+        }
     }
 
     /// Select the nearest entity within threshold. Returns true if found.
@@ -323,10 +345,39 @@ impl Sketch {
             }
         };
 
-        // Priority 1: Sketch endpoints (existing geometry snaps)
+        // Priority 1a: Sketch endpoints + circle quadrants (existing geometry snaps)
         for entity in &self.entities {
             for p in entity.endpoints() {
-                consider(&mut best, p.distance_to(pos), SnapTarget { point: p, snap_type: SnapType::Endpoint });
+                let snap_type = match entity {
+                    SketchEntity::Circle { center, .. } if p.distance_to(*center) > 0.001 => SnapType::Quadrant,
+                    _ => SnapType::Endpoint,
+                };
+                consider(&mut best, p.distance_to(pos), SnapTarget { point: p, snap_type });
+            }
+        }
+
+        // Priority 1b: Nearest point on circle circumference (lower priority than quadrants)
+        let check_circumference = match &best {
+            None => true,
+            Some((d, _)) => *d > threshold * 0.5,
+        };
+        if check_circumference {
+            for entity in &self.entities {
+                if let SketchEntity::Circle { center, radius } = entity {
+                    let dx = pos.x - center.x;
+                    let dy = pos.y - center.y;
+                    let dist_to_center = (dx * dx + dy * dy).sqrt();
+                    if dist_to_center > 1e-6 {
+                        let nearest = Point2D::new(
+                            center.x + dx / dist_to_center * radius,
+                            center.y + dy / dist_to_center * radius,
+                        );
+                        let dist = nearest.distance_to(pos);
+                        if dist < threshold * 0.7 {
+                            consider(&mut best, dist, SnapTarget { point: nearest, snap_type: SnapType::Circumference });
+                        }
+                    }
+                }
             }
         }
 
@@ -450,8 +501,35 @@ impl Sketch {
     }
 
     /// Select the region at a 2D point. Returns true if a region was found.
+    /// Rejects regions that lie outside the parent face boundary (would create
+    /// floating geometry disconnected from the mesh).
     pub fn select_region_at(&mut self, point: Point2D) -> bool {
         self.selected_region = self.region_solver.region_at_point(&self.entities, point, self.face_boundary_2d.as_deref());
+
+        // If sketching on a mesh face, verify the region is inside the face boundary
+        if let (Some(idx), Some(ref boundary)) = (self.selected_region, &self.face_boundary_2d) {
+            if boundary.len() >= 3 {
+                let regions = self.region_solver.regions(&self.entities, self.face_boundary_2d.as_deref());
+                if let Some(region) = regions.get(idx) {
+                    // Check that the region centroid is inside the face boundary
+                    let centroid = region.centroid();
+                    let face_poly = geo::Polygon::new(
+                        geo::LineString::from(
+                            boundary.iter()
+                                .map(|p| geo::Coord { x: p.x as f64, y: p.y as f64 })
+                                .collect::<Vec<_>>()
+                        ),
+                        vec![],
+                    );
+                    let geo_point = geo::Point::new(centroid.x as f64, centroid.y as f64);
+                    use geo::algorithm::contains::Contains;
+                    if !face_poly.contains(&geo_point) {
+                        self.selected_region = None;
+                    }
+                }
+            }
+        }
+
         self.selected_region.is_some()
     }
 

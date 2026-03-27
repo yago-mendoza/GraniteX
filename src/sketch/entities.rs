@@ -38,10 +38,18 @@ pub enum SketchEntity {
 
 impl SketchEntity {
     /// Get the control points/endpoints of this entity (for snapping).
+    /// For circles, includes center + 4 quadrant points (top/bottom/left/right)
+    /// so that lines can connect to the circle's edge.
     pub fn endpoints(&self) -> Vec<Point2D> {
         match self {
             SketchEntity::Line { start, end } => vec![*start, *end],
-            SketchEntity::Circle { center, .. } => vec![*center],
+            SketchEntity::Circle { center, radius } => vec![
+                *center,
+                Point2D::new(center.x + radius, center.y),  // right (0°)
+                Point2D::new(center.x, center.y + radius),  // top (90°)
+                Point2D::new(center.x - radius, center.y),  // left (180°)
+                Point2D::new(center.x, center.y - radius),  // bottom (270°)
+            ],
             SketchEntity::ConstructionLine { start, end } => vec![*start, *end],
         }
     }
@@ -70,9 +78,11 @@ impl SketchEntity {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SnapType {
     Endpoint,   // existing sketch endpoint — yellow circle
+    Quadrant,   // circle quadrant point (0°/90°/180°/270°) — yellow circle
     Corner,     // mesh face corner/vertex — orange square
     Midpoint,   // edge midpoint — cyan triangle
     Edge,       // nearest point on edge — magenta circle
+    Circumference, // nearest point on circle circumference — magenta circle
 }
 
 /// A snap target with position and type.

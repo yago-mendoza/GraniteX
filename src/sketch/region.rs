@@ -53,6 +53,17 @@ impl SketchRegion {
 }
 
 impl SketchRegion {
+    /// Average of boundary points (for inside-face-boundary checks).
+    pub fn centroid(&self) -> Point2D {
+        if self.boundary.is_empty() {
+            return Point2D::new(0.0, 0.0);
+        }
+        let n = self.boundary.len() as f32;
+        let sx: f32 = self.boundary.iter().map(|p| p.x).sum();
+        let sy: f32 = self.boundary.iter().map(|p| p.y).sum();
+        Point2D::new(sx / n, sy / n)
+    }
+
     /// Test if a 2D point is inside this region (including holes).
     pub fn contains_point(&self, point: Point2D) -> bool {
         let geo_point = geo::Point::new(point.x as f64, point.y as f64);

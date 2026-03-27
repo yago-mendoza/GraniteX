@@ -10,9 +10,25 @@ impl App {
     pub(super) fn handle_draw_click(&mut self, screen_x: f32, screen_y: f32) {
         let Some(renderer) = &self.renderer else { return };
 
-        // If no sketch exists, create one on the clicked face or reference plane
+        // If no sketch exists, create one on the clicked face or reference plane.
+        // If a construction plane is pre-selected in the UI, prioritize it.
         if self.sketch.is_none() {
-            // Try face first
+            // If a construction plane is selected, try it FIRST (user expressed intent)
+            if let Some(crate::construction::ConstructionId::Plane(idx)) = self.ui.construction_selected {
+                let (ray_o, ray_d) = renderer.screen_to_ray(screen_x, screen_y);
+                if let Some(sketch_plane) = self.construction.plane_as_sketch_plane(idx) {
+                    if sketch_plane.ray_intersect(ray_o, ray_d).is_some() {
+                        self.sketch = Some(crate::sketch::Sketch::new(sketch_plane, None, None));
+                        self.ui.toasts.push(crate::ui::Toast::new(
+                            format!("Sketching on {}", self.construction.planes[idx].name)
+                        ));
+                    }
+                }
+                if self.sketch.is_none() { return; }
+            }
+        }
+        if self.sketch.is_none() {
+            // Try mesh face
             let result = crate::renderer::picking::pick_face(
                 screen_x, screen_y,
                 renderer.gpu_width(), renderer.gpu_height(),
@@ -52,19 +68,6 @@ impl App {
                             format!("Sketching on {}", self.construction.planes[idx].name)
                         ));
                     }
-                } else {
-                    // Also allow starting on a pre-selected plane
-                    if let Some(crate::construction::ConstructionId::Plane(idx)) = self.ui.construction_selected {
-                        if let Some(sketch_plane) = self.construction.plane_as_sketch_plane(idx) {
-                            // Check if click ray hits this plane at all
-                            if sketch_plane.ray_intersect(ray_o, ray_d).is_some() {
-                                self.sketch = Some(crate::sketch::Sketch::new(sketch_plane, None, None));
-                                self.ui.toasts.push(crate::ui::Toast::new(
-                                    format!("Sketching on {}", self.construction.planes[idx].name)
-                                ));
-                            }
-                        }
-                    }
                 }
                 if self.sketch.is_none() { return; }
             }
@@ -79,7 +82,8 @@ impl App {
 
         // Full snap + H/V inference pipeline (same as per-frame cursor update)
         let shift = self.input.modifiers.shift_key();
-        let (pos, _snap, _inference) = sketch.resolve_cursor(raw, shift);
+        let line_mode = matches!(self.ui.active_tool, Tool::Line | Tool::CLine);
+        let (pos, _snap, _inference) = sketch.resolve_cursor(raw, shift, line_mode);
         sketch.cursor_2d = Some(pos);
 
         let mut contour_closed = false;

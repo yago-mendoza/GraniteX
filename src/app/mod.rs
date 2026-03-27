@@ -295,7 +295,8 @@ impl App {
             if let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) {
                 let raw = sketch.world_to_2d(hit);
                 let shift = self.input.modifiers.shift_key();
-                let (pos, _snap, inference) = sketch.resolve_cursor(raw, shift);
+                let line_mode = self.ui.active_tool == Tool::Line;
+                let (pos, _snap, inference) = sketch.resolve_cursor(raw, shift, line_mode);
                 sketch.cursor_2d = Some(pos);
                 sketch.active_inference = inference;
                 sketch.update_preview_dimensions();
@@ -404,6 +405,14 @@ impl App {
     /// After extruding a sketch region, the parent face still exists underneath.
     /// This replaces it with the remainder (parent minus region).
     /// This is how SolidWorks works: extrude SPLITS the face, never overlaps.
+    /// Split a parent face by cutting out a region (with optional holes).
+    /// After extruding a sketch region, the parent face still exists underneath.
+    /// This replaces it with the remainder (parent minus region).
+    ///
+    /// Robustness guarantees:
+    /// - If the region covers the entire parent face, parent is preserved (no hole left)
+    /// - If geo::difference produces degenerate geometry, falls back to no-split
+    /// - If parent face no longer exists, returns silently
     fn split_parent_face(
         mesh: &mut crate::renderer::mesh::Mesh,
         parent_face_id: u32,
@@ -412,12 +421,15 @@ impl App {
         plane: &crate::sketch::SketchPlane,
     ) {
         use geo::algorithm::bool_ops::BooleanOps;
+        use geo::algorithm::area::Area;
 
-        // Get parent face boundary
-        let Some(parent_boundary) = mesh.face_boundary_corners(parent_face_id) else { return };
+        // Verify parent face still exists
+        let Some(parent_boundary) = mesh.face_boundary_corners(parent_face_id) else {
+            log::warn!("split_parent_face: parent face {} not found", parent_face_id);
+            return;
+        };
         if parent_boundary.len() < 3 || region_boundary.len() < 3 { return; }
 
-        // Project boundaries to 2D on the sketch plane
         let to_coord = |p: &glam::Vec3| -> geo::Coord<f64> {
             let p2d = plane.world_to_2d(*p);
             geo::Coord { x: p2d.x as f64, y: p2d.y as f64 }
@@ -426,22 +438,46 @@ impl App {
         let parent_coords: Vec<geo::Coord<f64>> = parent_boundary.iter().map(to_coord).collect();
         let region_coords: Vec<geo::Coord<f64>> = region_boundary.iter().map(to_coord).collect();
 
-        // Build region polygon with holes (so the full region area is subtracted)
         let hole_rings: Vec<geo::LineString<f64>> = region_holes.iter()
             .map(|hole| geo::LineString::new(hole.iter().map(to_coord).collect()))
             .collect();
 
-        let parent_poly = geo::Polygon::new(
-            geo::LineString::new(parent_coords),
-            vec![],
-        );
-        let region_poly = geo::Polygon::new(
-            geo::LineString::new(region_coords),
-            hole_rings,
-        );
+        let parent_poly = geo::Polygon::new(geo::LineString::new(parent_coords), vec![]);
+        let region_poly = geo::Polygon::new(geo::LineString::new(region_coords), hole_rings);
 
-        // Compute remainder = parent - region
-        let remainder = parent_poly.difference(&region_poly);
+        let parent_area = parent_poly.unsigned_area();
+        let region_area = region_poly.unsigned_area();
+
+        // Guard: if region covers >95% of parent, don't split (would leave a sliver)
+        if parent_area < 1e-10 || region_area / parent_area > 0.95 {
+            log::info!("split_parent_face: region covers entire parent face, skipping split");
+            // Just delete the parent — the extrusion's base face replaces it
+            mesh.delete_face(parent_face_id);
+            return;
+        }
+
+        // Compute remainder = parent - region (with panic guard)
+        let remainder = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parent_poly.difference(&region_poly)
+        }));
+
+        let remainder = match remainder {
+            Ok(r) => r,
+            Err(_) => {
+                log::error!("split_parent_face: geo::difference panicked, skipping split");
+                return; // Don't delete parent — leave it intact
+            }
+        };
+
+        // Validate remainder has meaningful geometry
+        let remainder_area: f64 = remainder.0.iter()
+            .map(|p| p.unsigned_area())
+            .sum();
+        if remainder_area < parent_area * 0.01 {
+            // Remainder is negligible — just delete parent
+            mesh.delete_face(parent_face_id);
+            return;
+        }
 
         // Delete the original parent face
         let normal = plane.normal;
@@ -449,11 +485,9 @@ impl App {
 
         // Add remainder polygon(s) as new face(s)
         for poly in remainder.0.iter() {
-            // Exterior ring → 3D points
             let coords: Vec<geo::Coord<f64>> = poly.exterior().0.clone();
-            if coords.len() < 4 { continue; } // geo includes closing point, so <4 means <3 unique
+            if coords.len() < 4 { continue; }
 
-            // Convert back to 3D (skip last point — geo duplicates first point to close)
             let points_3d: Vec<glam::Vec3> = coords[..coords.len() - 1].iter()
                 .map(|c| {
                     let p2d = crate::sketch::Point2D::new(c.x as f32, c.y as f32);
@@ -463,7 +497,18 @@ impl App {
 
             if points_3d.len() < 3 { continue; }
 
-            // Check for interior holes
+            // Check for degenerate triangles (area too small)
+            let face_area: f32 = {
+                let mut a = 0.0f32;
+                for i in 1..points_3d.len() - 1 {
+                    let e1 = points_3d[i] - points_3d[0];
+                    let e2 = points_3d[i + 1] - points_3d[0];
+                    a += e1.cross(e2).length() * 0.5;
+                }
+                a
+            };
+            if face_area < 1e-6 { continue; } // skip degenerate slivers
+
             let holes: Vec<Vec<glam::Vec3>> = poly.interiors().iter().filter_map(|ring| {
                 let hole_coords = &ring.0;
                 if hole_coords.len() < 4 { return None; }

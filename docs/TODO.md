@@ -116,6 +116,19 @@ Last updated: 2026-03-27 (Session 12)
 - [ ] **P2** Fillet/chamfer on sketch
 - [ ] **P3** Spline curves
 
+## Phase 7b: Construction Geometry (Target: 2026-03-27) — DONE
+
+- [x] **P0** Construction geometry data model (planes, axes, IDs)
+- [x] **P0** Default origin planes (XY, XZ, YZ) + axes (X, Y, Z)
+- [x] **P0** Construction geometry rendering (semi-transparent quads + line-quads)
+- [x] **P0** Construction geometry picking (ray-plane, ray-line intersection)
+- [x] **P0** Feature tree interactivity (planes/axes clickable, visibility toggles)
+- [x] **P0** Sketch on reference plane (not just on mesh faces)
+- [x] **P1** Construction lines in sketches (CLine tool, orange, excluded from regions)
+- [ ] **P2** User-defined reference planes (offset, angle, through-3-points)
+- [ ] **P2** User-defined axes (from 2 points, from edge, from plane intersection)
+- [ ] **P3** Temporary axes for cylindrical features
+
 ## Phase 8: Parametric Features (Target: 2026-09-01)
 
 - [ ] **P0** Feature tree (ordered list of operations)

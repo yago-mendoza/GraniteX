@@ -1,5 +1,30 @@
 # GraniteX — Changelog
 
+## 2026-03-27 — Deep Audit: 7 Critical Bugs Fixed
+
+Traced every user workflow path end-to-end. Found and fixed 7 logic bugs, ranging from geometry corruption to silent input rejection.
+
+- **FIX**: Sketch undo (Ctrl+Z) now restores chain state — previously created disconnected lines
+- **FIX**: H/V inference restricted to Line tool only — was breaking Rect (zero-height rejection) and Circle (radius warp)
+- **FIX**: Circles now expose quadrant snap points + circumference snap — was impossible to connect lines to circles
+- **FIX**: Cut drag now uses `max(0)` instead of `abs()` — dragging below start no longer increases depth
+- **FIX**: Coplanar face merge invalidates stale stored_boundaries — prevents corrupt extrudes on merged faces
+- **FIX**: Pre-selected construction plane takes priority over mesh face picking — user intent respected
+- **FIX**: Regions outside parent face boundary are now rejected — prevents floating geometry creation
+
+## 2026-03-27 — Construction Geometry Foundation
+
+- **NEW**: Construction geometry system (`src/construction.rs`) — data model for reference planes and axes
+- **NEW**: Construction renderer (`src/renderer/construction_renderer.rs`) — semi-transparent plane quads + axis lines in viewport
+- **NEW**: Default origin planes (XY/XZ/YZ) and axes (X/Y/Z) visible and selectable
+- **NEW**: Interactive feature tree — planes/axes clickable with colored indicators, visibility toggles
+- **NEW**: Construction geometry picking — ray-plane and ray-line intersection for clicking planes/axes
+- **NEW**: Sketch on reference plane — can now start sketches on origin planes (not just mesh faces)
+- **NEW**: Construction lines in sketches (CLine tool) — orange reference lines that don't form regions
+- **CHANGED**: `Sketch.face_id` is now `Option<u32>` — `None` for reference plane sketches
+- **CHANGED**: Extrude/cut from sketch guards `split_parent_face` on `face_id.is_some()`
+- This is the **gateway prerequisite** for Phase 8 (revolve, sweep, mirror, patterns)
+
 ## 2026-03-26 — Project Inception
 
 - Created GitHub repository (yago-mendoza/GraniteX)

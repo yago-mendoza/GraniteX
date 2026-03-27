@@ -274,7 +274,7 @@ impl SketchRenderer {
     fn push_snap_indicator(&self, verts: &mut Vec<SketchVertex>, pos: Vec3, normal: Vec3, snap_type: SnapType) {
         let size = 0.012;
         match snap_type {
-            SnapType::Endpoint => {
+            SnapType::Endpoint | SnapType::Quadrant => {
                 self.push_dot_on_plane(verts, pos, normal, size, [0.95, 0.9, 0.2]); // yellow
             }
             SnapType::Corner => {
@@ -283,7 +283,7 @@ impl SketchRenderer {
             SnapType::Midpoint => {
                 self.push_triangle_on_plane(verts, pos, normal, size, [0.2, 0.9, 0.9]); // cyan
             }
-            SnapType::Edge => {
+            SnapType::Edge | SnapType::Circumference => {
                 self.push_diamond_on_plane(verts, pos, normal, size * 0.8, [0.9, 0.3, 0.9]); // magenta
             }
         }

@@ -31,6 +31,7 @@ impl Mesh {
         for &vi in &face_verts {
             let pos = Vec3::from(self.vertices[vi].position) + offset;
             self.vertices[vi].position = pos.into();
+            self.vertices[vi].normal = normal.into(); // preserve outward normal for cap
             self.vertices[vi].face_id = cap_face_id;
         }
 
@@ -156,6 +157,11 @@ impl Mesh {
                         self.next_face_id += 1;
                         id
                     });
+
+                // Invalidate stored boundary for merged face — the old boundary
+                // is stale after absorbing the new quad. face_boundary_corners()
+                // will fall back to angle-sort (correct for convex merged faces).
+                self.stored_boundaries.remove(&side_face_id);
 
                 self.push_quad(side_positions, side_normal, side_face_id);
             }
