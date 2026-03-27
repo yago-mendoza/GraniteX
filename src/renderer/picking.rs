@@ -23,6 +23,9 @@ pub fn pick_face(
     view_proj: Mat4,
     mesh: &Mesh,
 ) -> Option<PickResult> {
+    // Guard against zero-size viewport (crash bugs 1-2)
+    if screen_width < 1.0 || screen_height < 1.0 { return None; }
+
     let ndc_x = (screen_x / screen_width) * 2.0 - 1.0;
     let ndc_y = 1.0 - (screen_y / screen_height) * 2.0;
 
@@ -31,11 +34,13 @@ pub fn pick_face(
     // Unproject near/far with proper homogeneous divide
     let near_h = inv_vp * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
     let far_h = inv_vp * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+    if near_h.w.abs() < 1e-10 || far_h.w.abs() < 1e-10 { return None; }
     let near = near_h.truncate() / near_h.w;
     let far = far_h.truncate() / far_h.w;
 
     let ray_origin = near;
-    let ray_dir = (far - near).normalize();
+    let ray_dir = (far - near).normalize_or_zero();
+    if ray_dir.length_squared() < 1e-10 { return None; }
 
     let mut best: Option<PickResult> = None;
     let indices = &mesh.indices;
@@ -45,6 +50,7 @@ pub fn pick_face(
         let i0 = tri[0] as usize;
         let i1 = tri[1] as usize;
         let i2 = tri[2] as usize;
+        if i0 >= verts.len() || i1 >= verts.len() || i2 >= verts.len() { continue; }
 
         let v0 = Vec3::from(verts[i0].position);
         let v1 = Vec3::from(verts[i1].position);
@@ -60,7 +66,7 @@ pub fn pick_face(
                 // Read face_id from the vertex — this is the ground truth
                 let face_id = verts[i0].face_id;
 
-                if best.is_none() || t < best.unwrap().distance {
+                if best.as_ref().map_or(true, |b| t < b.distance) {
                     best = Some(PickResult {
                         face_id,
                         distance: t,
@@ -169,8 +175,10 @@ pub fn pick_edge(
     let mut edge_faces: HashMap<EdgeKey, EdgeInfo> = HashMap::new();
 
     for tri in mesh.indices.chunks_exact(3) {
-        let face_id = mesh.vertices[tri[0] as usize].face_id;
-        for &(a, b) in &[(tri[0] as usize, tri[1] as usize), (tri[1] as usize, tri[2] as usize), (tri[2] as usize, tri[0] as usize)] {
+        let (t0, t1, t2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        if t0 >= mesh.vertices.len() || t1 >= mesh.vertices.len() || t2 >= mesh.vertices.len() { continue; }
+        let face_id = mesh.vertices[t0].face_id;
+        for &(a, b) in &[(t0, t1), (t1, t2), (t2, t0)] {
             let pa = mesh.vertices[a].position;
             let pb = mesh.vertices[b].position;
             let key = edge_key(pa, pb);
@@ -191,6 +199,7 @@ pub fn pick_edge(
     // Compute camera position from inverse view_proj
     let inv_vp = view_proj.inverse();
     let cam_h = inv_vp * Vec4::new(0.0, 0.0, 0.0, 1.0);
+    if cam_h.w.abs() < 1e-10 { return None; }
     let cam_pos = cam_h.truncate() / cam_h.w;
 
     let mut best: Option<(f32, Vec3, Vec3)> = None;
@@ -212,7 +221,7 @@ pub fn pick_edge(
 
         let dist = point_to_segment_dist(screen_x, screen_y, sx0, sy0, sx1, sy1);
         if dist < threshold_px {
-            if best.is_none() || dist < best.unwrap().0 {
+            if best.as_ref().map_or(true, |b| dist < b.0) {
                 best = Some((dist, p0, p1));
             }
         }

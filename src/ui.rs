@@ -50,6 +50,69 @@ pub enum ViewPreset {
     Isometric,
 }
 
+// --- Command Palette ---
+
+pub struct PaletteCommand {
+    pub name: &'static str,
+    pub shortcut: &'static str,
+    pub action: PaletteAction,
+}
+
+#[derive(Clone, Copy)]
+pub enum PaletteAction {
+    SetTool(Tool),
+    SetView(ViewPreset),
+    Undo,
+    Redo,
+    Delete,
+    NewScene,
+    Import,
+    Save,
+    Open,
+    ExportStl,
+    ExportObj,
+    FitCamera,
+    ToggleGrid,
+    ToggleWireframe,
+    SelectionModeFace,
+    SelectionModeEdge,
+}
+
+pub fn all_commands() -> Vec<PaletteCommand> {
+    vec![
+        PaletteCommand { name: "Select Tool", shortcut: "S", action: PaletteAction::SetTool(Tool::Select) },
+        PaletteCommand { name: "Move Tool", shortcut: "G", action: PaletteAction::SetTool(Tool::Move) },
+        PaletteCommand { name: "Extrude Tool", shortcut: "E", action: PaletteAction::SetTool(Tool::Extrude) },
+        PaletteCommand { name: "Cut Tool", shortcut: "X", action: PaletteAction::SetTool(Tool::Cut) },
+        PaletteCommand { name: "Inset Tool", shortcut: "I", action: PaletteAction::SetTool(Tool::Inset) },
+        PaletteCommand { name: "Line Tool", shortcut: "L", action: PaletteAction::SetTool(Tool::Line) },
+        PaletteCommand { name: "Rectangle Tool", shortcut: "R", action: PaletteAction::SetTool(Tool::Rect) },
+        PaletteCommand { name: "Circle Tool", shortcut: "C", action: PaletteAction::SetTool(Tool::Circle) },
+        PaletteCommand { name: "Measure Tool", shortcut: "M", action: PaletteAction::SetTool(Tool::Measure) },
+        PaletteCommand { name: "View Front", shortcut: "Num 1", action: PaletteAction::SetView(ViewPreset::Front) },
+        PaletteCommand { name: "View Top", shortcut: "Num 7", action: PaletteAction::SetView(ViewPreset::Top) },
+        PaletteCommand { name: "View Right", shortcut: "Num 3", action: PaletteAction::SetView(ViewPreset::Right) },
+        PaletteCommand { name: "View Isometric", shortcut: "Num 0", action: PaletteAction::SetView(ViewPreset::Isometric) },
+        PaletteCommand { name: "View Back", shortcut: "Ctrl+1", action: PaletteAction::SetView(ViewPreset::Back) },
+        PaletteCommand { name: "View Bottom", shortcut: "Ctrl+7", action: PaletteAction::SetView(ViewPreset::Bottom) },
+        PaletteCommand { name: "View Left", shortcut: "Ctrl+3", action: PaletteAction::SetView(ViewPreset::Left) },
+        PaletteCommand { name: "Undo", shortcut: "Ctrl+Z", action: PaletteAction::Undo },
+        PaletteCommand { name: "Redo", shortcut: "Ctrl+Y", action: PaletteAction::Redo },
+        PaletteCommand { name: "Delete Face", shortcut: "Del", action: PaletteAction::Delete },
+        PaletteCommand { name: "New Scene", shortcut: "Ctrl+N", action: PaletteAction::NewScene },
+        PaletteCommand { name: "Import File", shortcut: "Ctrl+I", action: PaletteAction::Import },
+        PaletteCommand { name: "Save Project", shortcut: "Ctrl+S", action: PaletteAction::Save },
+        PaletteCommand { name: "Open Project", shortcut: "Ctrl+O", action: PaletteAction::Open },
+        PaletteCommand { name: "Export STL", shortcut: "", action: PaletteAction::ExportStl },
+        PaletteCommand { name: "Export OBJ", shortcut: "", action: PaletteAction::ExportObj },
+        PaletteCommand { name: "Fit Camera", shortcut: "Home", action: PaletteAction::FitCamera },
+        PaletteCommand { name: "Toggle Grid", shortcut: "", action: PaletteAction::ToggleGrid },
+        PaletteCommand { name: "Toggle Wireframe", shortcut: "W", action: PaletteAction::ToggleWireframe },
+        PaletteCommand { name: "Face Selection Mode", shortcut: "Tab", action: PaletteAction::SelectionModeFace },
+        PaletteCommand { name: "Edge Selection Mode", shortcut: "Tab", action: PaletteAction::SelectionModeEdge },
+    ]
+}
+
 pub struct UiState {
     pub show_grid: bool,
     pub show_wireframe: bool,
@@ -78,6 +141,8 @@ pub struct UiState {
     pub selected_edge: Option<([f32; 3], [f32; 3])>,
     // Dirty (unsaved changes) indicator
     pub dirty: bool,
+    // Auto-save toggle
+    pub auto_save_enabled: bool,
     pub chat_input: String,
     pub chat_history: Vec<ChatMessage>,
     pub selected_feature: Option<String>,
@@ -116,6 +181,12 @@ pub struct UiState {
     pub move_x: f32,
     pub move_y: f32,
     pub move_z: f32,
+    // Command palette
+    pub command_palette_open: bool,
+    pub command_palette_query: String,
+    pub command_palette_selected: usize,
+    pub command_palette_action: Option<PaletteAction>,
+    pub dark_mode: bool,
 }
 
 pub struct ChatMessage {
@@ -190,6 +261,7 @@ impl UiState {
             selection_mode: SelectionMode::Face,
             selected_edge: None,
             dirty: false,
+            auto_save_enabled: true,
             chat_input: String::new(),
             chat_history: vec![
                 ChatMessage {
@@ -226,10 +298,22 @@ impl UiState {
             move_x: 0.0,
             move_y: 0.0,
             move_z: 0.0,
+            command_palette_open: false,
+            command_palette_query: String::new(),
+            command_palette_selected: 0,
+            command_palette_action: None,
+            dark_mode: true,
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        // Apply theme based on dark_mode toggle
+        if self.dark_mode {
+            ctx.set_visuals(egui::Visuals::dark());
+        } else {
+            ctx.set_visuals(egui::Visuals::light());
+        }
+
         self.draw_top_toolbar(ctx);
         self.draw_bottom_bar(ctx);
         self.draw_left_panel(ctx);
@@ -240,6 +324,7 @@ impl UiState {
         self.draw_context_menu(ctx);
         self.draw_dimension_label(ctx);
         self.draw_sketch_dimensions(ctx);
+        self.draw_command_palette(ctx);
     }
 
     fn draw_top_toolbar(&mut self, ctx: &egui::Context) {
@@ -365,6 +450,11 @@ impl UiState {
                         ui.checkbox(&mut self.show_wireframe, egui::RichText::new("Wire").size(10.0));
                     }
                     ui.checkbox(&mut self.show_chat, egui::RichText::new("Chat").size(10.0));
+                    ui.checkbox(&mut self.auto_save_enabled, egui::RichText::new("Auto-save").size(10.0));
+                    ui.separator();
+                    if ui.selectable_label(self.dark_mode, egui::RichText::new("Dark").size(10.0)).clicked() {
+                        self.dark_mode = !self.dark_mode;
+                    }
                 });
             });
     }

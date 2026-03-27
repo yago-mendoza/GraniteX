@@ -45,7 +45,8 @@ pub fn triangulate_3d_polygon(points: &[Vec3], normal: Vec3) -> Vec<[usize; 3]> 
                 .collect()
         }
         Err(_) => {
-            // Fallback: fan (convex only)
+            // Fallback: fan (convex only — may be wrong for concave polygons)
+            log::warn!("earcutr failed for {}-vertex polygon, using fan fallback", points.len());
             (1..points.len() - 1)
                 .map(|i| [0, i, i + 1])
                 .collect()
@@ -180,6 +181,11 @@ impl Mesh {
             let i0 = tri[0] as usize;
             let i1 = tri[1] as usize;
             let i2 = tri[2] as usize;
+
+            // Bug 25 fix: skip triangles with out-of-bounds indices
+            if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() {
+                continue;
+            }
 
             // Compute geometric face normal (ignore file normals — we recompute)
             let e1 = positions[i1] - positions[i0];
@@ -403,9 +409,8 @@ impl Mesh {
     }
 
     pub fn face_count(&self) -> u32 {
-        let mut ids: Vec<u32> = self.vertices.iter().map(|v| v.face_id).collect();
-        ids.sort_unstable();
-        ids.dedup();
+        // Bug 20 fix: use HashSet instead of sort+dedup (called every frame)
+        let ids: std::collections::HashSet<u32> = self.vertices.iter().map(|v| v.face_id).collect();
         ids.len() as u32
     }
 
@@ -594,6 +599,92 @@ mod tests {
         let mesh = Mesh::cube();
         for face_id in 0..6u32 {
             assert!(mesh.is_face_planar(face_id), "cube face {} should be planar", face_id);
+        }
+    }
+
+    // ---- Edge case tests (agent audit) ----
+
+    #[test]
+    fn extrude_nonexistent_face_returns_none() {
+        let mut mesh = Mesh::cube();
+        assert!(mesh.extrude_face(999, 1.0).is_none());
+    }
+
+    #[test]
+    fn extrude_deleted_face_returns_none() {
+        let mut mesh = Mesh::cube();
+        mesh.delete_face(0);
+        assert!(mesh.extrude_face(0, 1.0).is_none());
+    }
+
+    #[test]
+    fn cut_nonexistent_face_returns_none() {
+        let mut mesh = Mesh::cube();
+        assert!(mesh.cut_face(999, 0.5).is_none());
+    }
+
+    #[test]
+    fn delete_same_face_twice() {
+        let mut mesh = Mesh::cube();
+        assert!(mesh.delete_face(0));
+        assert!(!mesh.delete_face(0), "second delete should return false");
+        assert_eq!(mesh.face_count(), 5);
+    }
+
+    #[test]
+    fn extrude_zero_distance_rejected() {
+        let mut mesh = Mesh::cube();
+        let faces_before = mesh.face_count();
+        // Zero distance extrude is meaningless — should be rejected gracefully
+        let cap = mesh.extrude_face(2, 0.0);
+        assert!(cap.is_none(), "zero distance extrude should return None");
+        assert_eq!(mesh.face_count(), faces_before, "mesh should be unchanged");
+    }
+
+    #[test]
+    fn extrude_negative_distance() {
+        let mut mesh = Mesh::cube();
+        let cap = mesh.extrude_face(2, -0.3);
+        assert!(cap.is_some());
+        let cap_normal = mesh.face_normal(cap.unwrap()).unwrap();
+        assert!(v3_approx_eq(cap_normal, Vec3::Y), "cap normal should still point up");
+    }
+
+    #[test]
+    fn inset_nonexistent_face_returns_none() {
+        let mut mesh = Mesh::cube();
+        assert!(mesh.inset_face(999, 0.1).is_none());
+    }
+
+    #[test]
+    fn face_boundary_nonexistent_returns_none() {
+        let mesh = Mesh::cube();
+        assert!(mesh.face_boundary_corners(999).is_none());
+    }
+
+    #[test]
+    fn multiple_operations_indices_valid() {
+        let mut mesh = Mesh::cube();
+        mesh.delete_face(0);
+        let _ = mesh.extrude_face(2, 0.5);
+        mesh.delete_face(1);
+        let _ = mesh.extrude_face(5, 0.2);
+
+        assert_eq!(mesh.indices.len() % 3, 0);
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertices.len(),
+                "index {} >= vertex count {}", idx, mesh.vertices.len());
+        }
+    }
+
+    #[test]
+    fn inset_then_extrude_inner() {
+        let mut mesh = Mesh::cube();
+        let inner = mesh.inset_face(2, 0.1).unwrap();
+        let cap = mesh.extrude_face(inner, 0.5);
+        assert!(cap.is_some(), "should be able to extrude inset inner face");
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertices.len());
         }
     }
 }

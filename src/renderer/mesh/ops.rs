@@ -7,6 +7,9 @@ impl Mesh {
     /// Extrude a face along its normal by `distance`.
     /// Coplanar adjacent faces are merged (SolidWorks behavior).
     pub fn extrude_face(&mut self, face_id: u32, distance: f32) -> Option<u32> {
+        // Bug 21 fix: reject zero-distance extrude (creates degenerate geometry)
+        if distance.abs() < 1e-5 { return None; }
+
         let normal = self.face_normal(face_id)?;
         let offset = normal * distance;
 
@@ -242,7 +245,8 @@ impl Mesh {
         self.stored_holes.remove(&face_id);
         let mut new_indices: Vec<u32> = Vec::new();
         for chunk in self.indices.chunks_exact(3) {
-            if self.vertices[chunk[0] as usize].face_id != face_id {
+            let idx = chunk[0] as usize;
+            if idx < self.vertices.len() && self.vertices[idx].face_id != face_id {
                 new_indices.extend_from_slice(chunk);
             }
         }
@@ -283,9 +287,16 @@ impl Mesh {
 
         let center: Vec3 = corners.iter().copied().sum::<Vec3>() / n as f32;
 
+        // Bug 23 fix: clamp inset amount to avoid inverting the inner polygon
+        let max_amount = corners.iter()
+            .map(|c| (*c - center).length())
+            .fold(f32::INFINITY, f32::min) * 0.95;
+        let clamped = amount.min(max_amount);
+        if clamped < 1e-5 { return None; }
+
         let inner_corners: Vec<Vec3> = corners.iter().map(|c| {
             let dir = (center - *c).normalize_or_zero();
-            *c + dir * amount
+            *c + dir * clamped
         }).collect();
 
         self.delete_face(face_id);
@@ -436,7 +447,8 @@ impl Mesh {
     fn remove_face_indices(&mut self, face_id: u32) {
         let mut new_indices = Vec::with_capacity(self.indices.len());
         for chunk in self.indices.chunks_exact(3) {
-            if chunk.len() == 3 && self.vertices[chunk[0] as usize].face_id != face_id {
+            let idx = chunk[0] as usize;
+            if idx < self.vertices.len() && self.vertices[idx].face_id != face_id {
                 new_indices.extend_from_slice(chunk);
             }
         }
