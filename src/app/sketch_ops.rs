@@ -4,41 +4,70 @@ use super::App;
 
 impl App {
     pub(super) fn is_drawing_tool(&self) -> bool {
-        matches!(self.ui.active_tool, Tool::Line | Tool::Rect | Tool::Circle)
+        matches!(self.ui.active_tool, Tool::Line | Tool::Rect | Tool::Circle | Tool::CLine)
     }
 
     pub(super) fn handle_draw_click(&mut self, screen_x: f32, screen_y: f32) {
         let Some(renderer) = &self.renderer else { return };
 
-        // If no sketch exists, create one on the clicked face
+        // If no sketch exists, create one on the clicked face or reference plane
         if self.sketch.is_none() {
+            // Try face first
             let result = crate::renderer::picking::pick_face(
                 screen_x, screen_y,
                 renderer.gpu_width(), renderer.gpu_height(),
                 renderer.view_proj(),
                 &renderer.mesh,
             );
-            let Some(pick) = result else { return };
-            let face_id = pick.face_id;
 
-            // Only allow sketching on PLANAR faces (not cylinders, spheres, etc.)
-            if !renderer.mesh.is_face_planar(face_id) {
-                self.ui.toasts.push(crate::ui::Toast::new(
-                    "Cannot sketch on curved surfaces — select a flat face".into()
-                ));
-                return;
+            if let Some(pick) = result {
+                let face_id = pick.face_id;
+
+                if !renderer.mesh.is_face_planar(face_id) {
+                    self.ui.toasts.push(crate::ui::Toast::new(
+                        "Cannot sketch on curved surfaces — select a flat face".into()
+                    ));
+                    return;
+                }
+
+                let Some(normal) = renderer.mesh.face_normal(face_id) else { return };
+                let Some(center) = renderer.face_center(face_id) else { return };
+                let plane = SketchPlane::from_face(normal, center);
+
+                let face_boundary_2d = renderer.mesh.face_boundary_corners(face_id).map(|pts| {
+                    pts.iter().map(|p| plane.world_to_2d(*p)).collect::<Vec<_>>()
+                });
+
+                self.sketch = Some(crate::sketch::Sketch::new(plane, Some(face_id), face_boundary_2d));
+            } else {
+                // No face hit — try selected construction plane
+                let (ray_o, ray_d) = renderer.screen_to_ray(screen_x, screen_y);
+                let extent = (renderer.camera_distance() * 0.6).clamp(0.5, 10.0);
+
+                // Check if clicking on a visible construction plane
+                if let Some((crate::construction::ConstructionId::Plane(idx), _)) = self.construction.pick(ray_o, ray_d, extent) {
+                    if let Some(sketch_plane) = self.construction.plane_as_sketch_plane(idx) {
+                        self.sketch = Some(crate::sketch::Sketch::new(sketch_plane, None, None));
+                        self.ui.toasts.push(crate::ui::Toast::new(
+                            format!("Sketching on {}", self.construction.planes[idx].name)
+                        ));
+                    }
+                } else {
+                    // Also allow starting on a pre-selected plane
+                    if let Some(crate::construction::ConstructionId::Plane(idx)) = self.ui.construction_selected {
+                        if let Some(sketch_plane) = self.construction.plane_as_sketch_plane(idx) {
+                            // Check if click ray hits this plane at all
+                            if sketch_plane.ray_intersect(ray_o, ray_d).is_some() {
+                                self.sketch = Some(crate::sketch::Sketch::new(sketch_plane, None, None));
+                                self.ui.toasts.push(crate::ui::Toast::new(
+                                    format!("Sketching on {}", self.construction.planes[idx].name)
+                                ));
+                            }
+                        }
+                    }
+                }
+                if self.sketch.is_none() { return; }
             }
-
-            let Some(normal) = renderer.mesh.face_normal(face_id) else { return };
-            let Some(center) = renderer.face_center(face_id) else { return };
-            let plane = SketchPlane::from_face(normal, center);
-
-            // Get parent face boundary in 2D for outer region computation
-            let face_boundary_2d = renderer.mesh.face_boundary_corners(face_id).map(|pts| {
-                pts.iter().map(|p| plane.world_to_2d(*p)).collect::<Vec<_>>()
-            });
-
-            self.sketch = Some(crate::sketch::Sketch::new(plane, face_id, face_boundary_2d));
         }
 
         let Some(renderer) = &self.renderer else { return };
@@ -46,34 +75,43 @@ impl App {
 
         let (ray_o, ray_d) = renderer.screen_to_ray(screen_x, screen_y);
         let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) else { return };
-        let mut pos = sketch.world_to_2d(hit);
-        sketch.cursor_2d = Some(pos);
+        let raw = sketch.world_to_2d(hit);
 
-        // Snap to nearest target (endpoints, corners, midpoints, edges)
-        if let Some(snap) = sketch.snap_to_target(pos, 0.05) {
-            pos = snap.point;
-        }
+        // Full snap + H/V inference pipeline (same as per-frame cursor update)
+        let shift = self.input.modifiers.shift_key();
+        let (pos, _snap, _inference) = sketch.resolve_cursor(raw, shift);
+        sketch.cursor_2d = Some(pos);
 
         let mut contour_closed = false;
 
         match self.ui.active_tool {
-            Tool::Line => {
+            Tool::Line | Tool::CLine => {
+                let is_construction = self.ui.active_tool == Tool::CLine;
                 if let Some(start) = sketch.pending_start.take() {
-                    sketch.add_line(start, pos);
-                    if let Some(chain_start) = sketch.chain_start {
-                        if pos.distance_to(chain_start) < 0.01 {
-                            contour_closed = true;
-                            sketch.pending_start = None;
-                            sketch.chain_start = None;
+                    if is_construction {
+                        sketch.add_construction_line(start, pos);
+                        // Construction lines don't chain — each is standalone
+                        sketch.pending_start = None;
+                        sketch.chain_start = None;
+                    } else {
+                        sketch.add_line(start, pos);
+                        if let Some(chain_start) = sketch.chain_start {
+                            if pos.distance_to(chain_start) < 0.01 {
+                                contour_closed = true;
+                                sketch.pending_start = None;
+                                sketch.chain_start = None;
+                            } else {
+                                sketch.pending_start = Some(pos);
+                            }
                         } else {
                             sketch.pending_start = Some(pos);
                         }
-                    } else {
-                        sketch.pending_start = Some(pos);
                     }
                 } else {
                     sketch.pending_start = Some(pos);
-                    sketch.chain_start = Some(pos);
+                    if !is_construction {
+                        sketch.chain_start = Some(pos);
+                    }
                 }
             }
             Tool::Rect => {

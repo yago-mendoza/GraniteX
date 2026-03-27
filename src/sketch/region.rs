@@ -141,8 +141,12 @@ fn extract_contours(entities: &[SketchEntity]) -> Vec<Contour> {
     let mut contours = Vec::new();
     let mut used = vec![false; entities.len()];
 
-    // Pass 1: Extract circles (always closed)
+    // Pass 1: Extract circles (always closed). Skip construction entities.
     for (i, entity) in entities.iter().enumerate() {
+        if entity.is_construction() {
+            used[i] = true; // mark as used so Pass 2 skips them too
+            continue;
+        }
         if let SketchEntity::Circle { center, radius } = entity {
             let segments = 64;
             let points: Vec<Point2D> = (0..segments)

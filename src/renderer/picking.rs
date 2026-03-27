@@ -109,3 +109,100 @@ fn ray_triangle_intersect(
     let t = f * edge2.dot(q);
     if t > 1e-6 { Some(t) } else { None }
 }
+
+/// Pick the nearest mesh boundary edge by screen-space distance.
+/// Returns the two endpoints of the closest edge, or None if nothing is within threshold.
+pub fn pick_edge(
+    screen_x: f32,
+    screen_y: f32,
+    screen_width: f32,
+    screen_height: f32,
+    view_proj: Mat4,
+    mesh: &Mesh,
+    threshold_px: f32,
+) -> Option<(Vec3, Vec3)> {
+    use std::collections::{HashMap, HashSet};
+
+    // Project a 3D point to screen space
+    let project = |p: Vec3| -> Option<(f32, f32)> {
+        let clip = view_proj * p.extend(1.0);
+        if clip.w.abs() < 1e-6 { return None; }
+        let ndc = clip.truncate() / clip.w;
+        let sx = (ndc.x * 0.5 + 0.5) * screen_width;
+        let sy = (0.5 - ndc.y * 0.5) * screen_height;
+        Some((sx, sy))
+    };
+
+    // Distance from point to line segment in 2D
+    let point_to_segment_dist = |px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32| -> f32 {
+        let dx = bx - ax;
+        let dy = by - ay;
+        let len_sq = dx * dx + dy * dy;
+        if len_sq < 1e-12 { return ((px - ax).powi(2) + (py - ay).powi(2)).sqrt(); }
+        let t = ((px - ax) * dx + (py - ay) * dy) / len_sq;
+        let t = t.clamp(0.0, 1.0);
+        let cx = ax + t * dx;
+        let cy = ay + t * dy;
+        ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+    };
+
+    // Collect boundary edges (same logic as pipeline edge extraction)
+    type PosKey = (i64, i64, i64);
+    let pos_key = |p: [f32; 3]| -> PosKey {
+        ((p[0] * 10000.0).round() as i64,
+         (p[1] * 10000.0).round() as i64,
+         (p[2] * 10000.0).round() as i64)
+    };
+    type EdgeKey = (PosKey, PosKey);
+    let edge_key = |a: [f32; 3], b: [f32; 3]| -> EdgeKey {
+        let ka = pos_key(a);
+        let kb = pos_key(b);
+        if ka <= kb { (ka, kb) } else { (kb, ka) }
+    };
+
+    struct EdgeInfo {
+        faces: HashSet<u32>,
+        tri_count: u32,
+        pa: [f32; 3],
+        pb: [f32; 3],
+    }
+    let mut edge_faces: HashMap<EdgeKey, EdgeInfo> = HashMap::new();
+
+    for tri in mesh.indices.chunks_exact(3) {
+        let face_id = mesh.vertices[tri[0] as usize].face_id;
+        for &(a, b) in &[(tri[0] as usize, tri[1] as usize), (tri[1] as usize, tri[2] as usize), (tri[2] as usize, tri[0] as usize)] {
+            let pa = mesh.vertices[a].position;
+            let pb = mesh.vertices[b].position;
+            let key = edge_key(pa, pb);
+            edge_faces.entry(key)
+                .and_modify(|info| { info.faces.insert(face_id); info.tri_count += 1; })
+                .or_insert_with(|| {
+                    let mut s = HashSet::new();
+                    s.insert(face_id);
+                    EdgeInfo { faces: s, tri_count: 1, pa, pb }
+                });
+        }
+    }
+
+    let mut best: Option<(f32, Vec3, Vec3)> = None;
+
+    for info in edge_faces.values() {
+        let is_boundary = info.faces.len() > 1 || info.tri_count == 1;
+        if !is_boundary { continue; }
+
+        let p0 = Vec3::from(info.pa);
+        let p1 = Vec3::from(info.pb);
+
+        let Some((sx0, sy0)) = project(p0) else { continue };
+        let Some((sx1, sy1)) = project(p1) else { continue };
+
+        let dist = point_to_segment_dist(screen_x, screen_y, sx0, sy0, sx1, sy1);
+        if dist < threshold_px {
+            if best.is_none() || dist < best.unwrap().0 {
+                best = Some((dist, p0, p1));
+            }
+        }
+    }
+
+    best.map(|(_, p0, p1)| (p0, p1))
+}

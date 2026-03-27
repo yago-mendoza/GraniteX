@@ -18,6 +18,8 @@ egui-winit = "0.30"
 glam = { version = "0.29", features = ["bytemuck"] }
 # Serialization (for vertex data, project files)
 bytemuck = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # Logging
 env_logger = "0.11"
 log = "0.4"

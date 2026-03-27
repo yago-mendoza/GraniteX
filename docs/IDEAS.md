@@ -18,9 +18,9 @@ Last updated: 2026-03-26
 - **Ghost mode for previous state** — when editing, show a transparent ghost of the mesh before the operation.
 
 ### Long-term / Moonshot
-- **AI-assisted modeling** — "create a bracket with two holes" → generates a parametric model. Use an LLM to generate sketch constraints + features.
+- **Conversational AI agent** — the flagship vision. Agent drives CAD engine step-by-step, uses viewport for visual communication, human validates each step. Full design in `docs/AGENT_VISION.md`, failure analysis in `docs/AGENT_CRITIQUE.md`. Key dependencies: Operation API layer, BREP kernel (entity stability), multi-pass renderer, GX script pipeline.
 - **Collaborative editing** — CRDTs for the feature tree? Wild idea, but imagine Google Docs for CAD.
-- **Generative design** — given constraints (load points, material, weight limit), optimize the shape. Topology optimization.
+- **Generative design** — given constraints (load points, material, weight limit), optimize the shape. Topology optimization. Complementary to the agent (agent designs, solver optimizes).
 - **Integrated FEA** — basic finite element analysis. Show stress distribution on the model.
 - **Version control for CAD** — Git-like branching for design iterations. Diff between model versions.
 - **WASM web viewer** — export a model as a self-contained HTML file that anyone can view in a browser. Zero install sharing.

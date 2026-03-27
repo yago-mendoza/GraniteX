@@ -4,6 +4,254 @@ Last updated: 2026-03-27
 
 ---
 
+## Reference & Construction Geometry — Professional CAD UX Research (2026-03-27)
+
+Research into how SolidWorks, Fusion 360, and Onshape handle reference geometry, construction geometry, and advanced feature workflows (revolve, sweep, mirror, pattern). Focus on UX/interaction patterns for GraniteX implementation planning.
+
+### 1. Default Planes (Front / Top / Right)
+
+**SolidWorks behavior:**
+- Three default planes exist at the origin: Front, Top, Right. They appear in the FeatureManager Design Tree before the Origin node.
+- **Cannot be deleted or reordered** — they are permanent fixtures.
+- **Hidden by default** in the 3D viewport. They only appear automatically when:
+  - Starting the very first sketch in a new part (so the user can pick which plane to sketch on).
+  - The user selects a plane in the FeatureManager tree (temporary highlight).
+- **Manual show/hide:** Right-click plane in FeatureManager > click eyeball icon (Show/Hide). Or View > Planes to toggle all.
+- **Visual appearance when shown:** Semi-transparent rectangles with labeled borders. They extend a finite visual distance from the origin (not infinite). Color-coded edges. They fade when not actively selected.
+- **Keyboard shortcut:** Can be assigned via Tools > Customize > Keyboard for "Show/Hide Planes."
+
+**Fusion 360 behavior:**
+- Origin folder contains XY, XZ, YZ planes plus X, Y, Z axes and a single origin point.
+- Hidden by default; click the lightbulb icon next to Origin folder or individual items to show.
+- Planes display as semi-transparent rectangles similar to SolidWorks.
+
+**GraniteX implication:** We need 3 default planes at origin, hidden by default, shown on demand. They should be semi-transparent rectangles with labeled edges. They must appear automatically when user enters "pick a plane" mode for sketch creation.
+
+### 2. Reference Plane Creation Methods
+
+**Access:** Insert > Reference Geometry > Plane (or Features toolbar dropdown > Reference Geometry > Plane)
+
+**The UI is adaptive** — what the user selects determines what type of plane gets created. Up to 3 references can be selected.
+
+| Method | User Selects | Result |
+|--------|-------------|--------|
+| **Offset** | 1 face or plane | Plane parallel at specified distance. Can create multiple equally-spaced planes at once. |
+| **At Angle** | 1 face/plane + 1 edge/line | Plane rotated by specified angle around the edge. Can create multiple at angle intervals. |
+| **Through 3 Points** | 3 points/vertices | Plane passing through all 3 points. |
+| **Parallel at Point** | 1 plane/face + 1 point | Plane parallel to the face, passing through the point. |
+| **Mid-Plane** | 2 faces (parallel or not) | Plane halfway between the two faces. Most common for mirror operations. |
+| **Normal to Curve** | 1 curve/edge (+ optional point) | Plane perpendicular to curve at its closest endpoint. |
+| **On Surface** | Point on non-planar surface | Tangent plane at that point. |
+| **Tangent to Cylinder** | Cylindrical face + plane | Plane tangent to cylinder, at angle from reference plane. |
+
+**Key UX pattern:** The PropertyManager dynamically updates as the user makes selections. The system infers the plane type from the combination of references. The user doesn't explicitly choose "offset" vs "angle" — it's automatic based on what geometry they pick.
+
+**Caution noted in docs:** If you click the Sketch button while you have a part edge selected, SolidWorks silently creates a reference plane and starts a sketch on it. This is a convenience shortcut but can confuse users.
+
+### 3. Reference Axes
+
+**Access:** Insert > Reference Geometry > Axis
+
+**Creation methods:**
+
+| Method | User Selects | Result |
+|--------|-------------|--------|
+| **One Line/Edge/Axis** | Any single straight element | Axis along that line |
+| **Two Planes** | 2 planes | Axis at their intersection line |
+| **Two Points/Vertices** | 2 points | Axis through both points |
+| **Cylindrical/Conical Face** | 1 cylindrical or conical face | Axis through center of the cylinder/cone |
+| **Point + Face/Plane** | 1 point + 1 face | Axis normal to face, through point |
+
+**Temporary Axes:**
+- SolidWorks **automatically** creates a temporary axis for every cylindrical and conical feature in the model (holes, fillets on round parts, etc.).
+- **Hidden by default.** Toggle via View > Temporary Axes.
+- These are extremely useful for circular patterns and revolve operations — users can reference them without explicitly creating reference axes.
+- Display: Shown as dashed lines through the model when visible.
+
+**Default origin axes:** X, Y, Z axes exist at the origin alongside the default planes. Also hidden by default, toggled from the FeatureManager Origin folder.
+
+### 4. Construction Lines / Centerlines in Sketches
+
+**Two ways to create construction geometry in sketches:**
+1. Draw a regular line, then check "For construction" / "Construction Geometry" checkbox in the PropertyManager.
+2. Use the dedicated **Centerline** tool (Tools > Sketch Entities > Centerline) which creates construction lines directly.
+
+**Visual difference:** Construction lines display as dashed/dot-dash lines (vs solid lines for real geometry). They are NOT included in the profile used for extrude/revolve — they serve purely as references.
+
+**Centerline special properties:**
+- Acts as an axis of revolution for the Revolve feature.
+- Enables **diameter dimensioning**: when you dimension a line relative to a centerline, the dimension automatically shows as a diameter (with the "dia" symbol) rather than a radius.
+- If there is exactly 1 centerline in the sketch, Revolve **automatically selects it** as the axis. If multiple centerlines exist, user must manually pick one.
+
+**Key UX pattern for revolve sketches:**
+1. Start sketch on a plane.
+2. Draw centerline FIRST (best practice — establishes the axis of revolution).
+3. Draw the profile on ONE SIDE of the centerline only.
+4. When adding dimensions, select both the horizontal line and the centerline → dimension appears as diameter (cursor position above/below centerline toggles radius vs diameter display).
+5. Fully constrain the sketch.
+6. Exit sketch or directly click Revolve.
+
+### 5. Revolve Operation — Complete UX Flow
+
+**Access:** Insert > Boss/Base > Revolve, or Features tab > Revolved Boss/Base button.
+
+**Pre-requisite:** A sketch containing a closed (or open for thin-feature) profile AND a centerline/axis.
+
+**Step-by-step:**
+1. **If sketch is active:** Click Revolved Boss/Base. SW auto-detects the profile and centerline.
+2. **If no sketch active:** Click Revolved Boss/Base. SW prompts to select a sketch, or to create a new one.
+3. **PropertyManager opens with these fields:**
+   - **Axis of Revolution** — auto-filled if single centerline exists. Blue selection box; user can click to change.
+   - **Direction type dropdown:**
+     - One-Direction (default) — revolves in one angular direction
+     - Mid-Plane — revolves symmetrically around sketch plane (e.g., 180 means 90 each side)
+     - Two-Direction — separate angle controls for each direction
+   - **Angle** — degrees of revolution (default 360). For Two-Direction: Angle1 and Angle2 separately.
+   - **Thin Feature checkbox** — if checked, adds wall thickness field. Converts solid revolve to hollow shell.
+   - **Selected Contours** — if sketch has multiple closed regions, user picks which to revolve.
+4. **Preview** updates live in the viewport as settings change.
+5. **Click green checkmark** (OK) to confirm, or red X to cancel.
+
+**Post-creation editing:** Right-click the feature in FeatureManager > Edit Feature (changes revolve parameters) or Edit Sketch (changes the 2D profile). Feature auto-updates when sketch changes.
+
+### 6. Sweep Operation — Complete UX Flow
+
+**Access:** Insert > Boss/Base > Sweep, or Features tab > Swept Boss/Base.
+
+**Pre-requisite:** Two separate sketches:
+1. **Path sketch** — the trajectory the profile follows (can be open or closed curve).
+2. **Profile sketch** — the cross-section shape to sweep along the path.
+
+**Critical constraint: Pierce Relation**
+The profile sketch MUST touch the path sketch. This is enforced by adding a "Pierce" sketch relation between a point on the profile and the path line. Pierce means "constrain this point to lie on this 3D curve where it pierces the sketch plane."
+
+**Step-by-step:**
+1. **Create path sketch first** (e.g., on Right Plane — a spline, arc, or series of lines). Exit sketch.
+2. **Create profile sketch second** (e.g., on Front Plane — a circle, rectangle, or complex profile).
+   - While in the profile sketch, select the center point of the profile and the path line, then add a Pierce relation.
+   - This snaps the profile's origin to where the path pierces the profile's sketch plane.
+3. Exit sketch.
+4. Click **Swept Boss/Base** from Features tab.
+5. **PropertyManager opens:**
+   - **Profile** selection box (highlighted blue) — click the profile sketch.
+   - **Path** selection box — click the path sketch.
+   - **Options:**
+     - Orientation/Twist Control (Follow Path, Keep Normal Constant, etc.)
+     - Guide Curves (for varying cross-section along path)
+     - Merge Tangent Faces
+     - Thin Feature option
+6. Live preview shows the swept solid.
+7. Click OK.
+
+**Shortcut for circular profiles:** If you just need a round cross-section (like a pipe), the sweep tool has a built-in circular profile option — you only need the path sketch, and specify a diameter. No second sketch needed.
+
+### 7. Mirror Operation — Complete UX Flow
+
+**Access:** Insert > Pattern/Mirror > Mirror Feature.
+
+**PropertyManager fields:**
+
+| Field | Description |
+|-------|-------------|
+| **Mirror Face/Plane** | Select a plane or planar face as the mirror symmetry plane. Can be a default plane, reference plane, or any flat face. |
+| **Features to Mirror** | Pick features from the FeatureManager tree or click them in the viewport. Only these features get mirrored. |
+| **Faces to Mirror** | Alternative: pick individual faces instead of entire features. |
+| **Bodies to Mirror** | Alternative: mirror entire solid bodies. Select from graphics area only (not tree). |
+
+**Options checkboxes:**
+- Geometry Pattern — faster computation, doesn't re-solve each mirrored feature individually.
+- Propagate Visual Properties — copies appearance/color to mirrored features.
+- Full Preview / Partial Preview — controls how much of the result shows during setup.
+
+**Two distinct mirror workflows:**
+
+**A. Mirror Feature (within same part):**
+1. Click Insert > Pattern/Mirror > Mirror Feature.
+2. Select the mirror plane (commonly the Mid-Plane or a default plane like Right Plane).
+3. Select features/faces/bodies to mirror.
+4. Click OK. Mirrored geometry appears as a new feature in the FeatureManager.
+
+**B. Mirror Part (creates new part file):**
+1. Select a planar face on the part.
+2. Insert > Mirror Part.
+3. A new part file is created that is the mirror image.
+4. Optionally linked — changes to the original propagate to the mirror.
+
+### 8. Pattern Operations — Complete UX Flow
+
+#### Linear Pattern
+
+**Access:** Insert > Pattern/Mirror > Linear Pattern.
+
+**PropertyManager fields:**
+- **Direction 1:**
+  - Direction reference — select an edge, axis, or linear sketch entity to define the pattern direction.
+  - Reverse Direction button (flips the pattern direction).
+  - Spacing — distance between instances.
+  - Number of Instances — total count including the original.
+- **Direction 2** (optional, for 2D grid patterns):
+  - Same fields as Direction 1 but for the perpendicular direction.
+- **Features and Faces:**
+  - Features to Pattern — select which features to repeat.
+  - Faces to Pattern — alternative to features.
+- **Options:**
+  - Geometry Pattern — performance optimization.
+  - Vary Sketch — allows pattern instances to adapt to local geometry.
+  - Instances to Skip — click specific pattern positions to exclude them.
+
+**Step-by-step:**
+1. Click Linear Pattern.
+2. Select a linear edge for Direction 1 (or it auto-fills if you pre-selected a feature with an obvious direction).
+3. Set spacing (e.g., 25mm) and instance count (e.g., 5).
+4. Optionally enable Direction 2 for a grid.
+5. Select features to pattern.
+6. Preview shows all instances. Click any instance dot to skip it.
+7. Click OK.
+
+#### Circular Pattern
+
+**Access:** Insert > Pattern/Mirror > Circular Pattern.
+
+**PropertyManager fields:**
+- **Pattern Axis** — select a temporary axis, reference axis, edge, or cylindrical face. This defines the center of rotation.
+- **Angle** — total angle to span (360 for full circle).
+- **Number of Instances** — total count including original.
+- **Equal Spacing checkbox** — when checked, instances are evenly distributed over the angle. When unchecked, user specifies angle between each instance.
+- **Features to Pattern / Faces to Pattern / Bodies to Pattern** — what to repeat.
+- **Instances to Skip** — click dots to exclude.
+
+**Step-by-step:**
+1. Click Circular Pattern.
+2. Select the axis of rotation (commonly a temporary axis from a cylindrical feature, or an explicit reference axis).
+3. Set total angle (typically 360) and instance count (e.g., 6 for hex pattern).
+4. Check Equal Spacing for uniform distribution.
+5. Select features to pattern.
+6. Preview shows circular arrangement. Click dots to skip any.
+7. Click OK.
+
+### Key UX Patterns Across All Features
+
+1. **PropertyManager is the control panel** — always appears on the left when a feature is active. Blue highlight = active selection box. Click different boxes to switch what you're selecting.
+2. **Live preview** — 3D viewport updates in real-time as you change parameters.
+3. **Auto-detection** — SW tries to infer references automatically (single centerline = revolve axis, pre-selected sketch = active sketch, etc.).
+4. **Selection boxes** — each PropertyManager has multiple selection boxes. Only one is "active" (blue) at a time. Clicking geometry fills the active box. Click a different box to switch context.
+5. **Green checkmark / Red X** — universal confirm/cancel in PropertyManager.
+6. **Feature tree is history** — every operation becomes a node in the FeatureManager tree, editable at any time. Right-click > Edit Feature or Edit Sketch.
+7. **Temporary axes are free** — every cylinder auto-generates a usable axis. Users rarely need to create explicit reference axes.
+
+### GraniteX Implementation Priority Notes
+
+For our implementation, the most impactful features to build first are:
+1. **Default planes + origin display** — needed for literally everything.
+2. **Revolve** — highest bang-for-buck new feature (just needs centerline support in sketcher).
+3. **Mirror** — conceptually simple (reflect geometry across plane), massively useful.
+4. **Linear/Circular Pattern** — transformational for mechanical parts.
+5. **Sweep** — complex but powerful; needs the pierce relation concept.
+6. **Reference plane creation** — offset and mid-plane are the most commonly used.
+7. **Reference axes** — mostly handled by temporary axes; explicit creation is lower priority.
+
+---
+
 ## Rust BREP Kernel Evaluation (2026-03-27)
 
 ### Candidates Evaluated

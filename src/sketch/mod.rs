@@ -13,7 +13,7 @@ mod entities;
 pub mod region;
 
 pub use plane::SketchPlane;
-pub use entities::{SketchEntity, Point2D, SnapType, SnapTarget};
+pub use entities::{SketchEntity, Point2D, SnapType, SnapTarget, InferenceType};
 pub use region::{RegionSolver, SketchRegion};
 
 use glam::Vec3;
@@ -22,7 +22,7 @@ use glam::Vec3;
 pub struct Sketch {
     pub plane: SketchPlane,
     pub entities: Vec<SketchEntity>,
-    pub face_id: u32,
+    pub face_id: Option<u32>,
 
     /// First click point for current drawing operation (None = not drawing)
     pub pending_start: Option<Point2D>,
@@ -37,10 +37,19 @@ pub struct Sketch {
     pub selected_region: Option<usize>,
     /// Parent face boundary in 2D (for computing outer region = face minus sketch).
     pub face_boundary_2d: Option<Vec<Point2D>>,
+
+    /// Current H/V inference state (updated per frame for preview).
+    pub active_inference: InferenceType,
+    /// Preview line length (for dimension display).
+    pub preview_length: Option<f32>,
+    /// Preview line angle in degrees (for dimension display).
+    pub preview_angle: Option<f32>,
+    /// Currently selected/hovered entity index (for editing/deletion).
+    pub selected_entity: Option<usize>,
 }
 
 impl Sketch {
-    pub fn new(plane: SketchPlane, face_id: u32, face_boundary_2d: Option<Vec<Point2D>>) -> Self {
+    pub fn new(plane: SketchPlane, face_id: Option<u32>, face_boundary_2d: Option<Vec<Point2D>>) -> Self {
         Self {
             plane,
             entities: Vec::new(),
@@ -51,11 +60,92 @@ impl Sketch {
             region_solver: RegionSolver::new(),
             selected_region: None,
             face_boundary_2d,
+            active_inference: InferenceType::None,
+            preview_length: None,
+            preview_angle: None,
+            selected_entity: None,
         }
     }
 
     pub fn world_to_2d(&self, world_pos: Vec3) -> Point2D {
         self.plane.world_to_2d(world_pos)
+    }
+
+    /// Apply H/V inference to a line endpoint.
+    /// With shift_held (ortho mode), always constrains to nearest cardinal direction.
+    /// Without shift, only snaps if within 5° of horizontal or vertical.
+    pub fn infer_constraint(start: Point2D, end: Point2D, shift_held: bool) -> (Point2D, InferenceType) {
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        if dx.abs() < 1e-6 && dy.abs() < 1e-6 {
+            return (end, InferenceType::None);
+        }
+
+        let angle = dy.atan2(dx).abs().to_degrees();
+        let threshold = if shift_held { 45.0 } else { 5.0 };
+
+        // Horizontal: angle near 0° or 180°
+        if angle < threshold || (180.0 - angle) < threshold {
+            return (Point2D::new(end.x, start.y), InferenceType::Horizontal);
+        }
+        // Vertical: angle near 90°
+        if (angle - 90.0).abs() < threshold {
+            return (Point2D::new(start.x, end.y), InferenceType::Vertical);
+        }
+
+        (end, InferenceType::None)
+    }
+
+    /// Grid spacing for grid snap (0 = disabled). Set from UI.
+    pub fn grid_spacing(&self) -> f32 {
+        0.05 // default 5cm grid
+    }
+
+    /// Snap a point to the nearest grid intersection.
+    fn snap_to_grid(p: Point2D, grid: f32) -> Point2D {
+        if grid <= 0.0 { return p; }
+        Point2D::new(
+            (p.x / grid).round() * grid,
+            (p.y / grid).round() * grid,
+        )
+    }
+
+    /// Resolve cursor position through snap + inference pipeline.
+    /// Returns (resolved position, snap target if any, inference type).
+    pub fn resolve_cursor(&self, raw_2d: Point2D, shift_held: bool) -> (Point2D, Option<SnapTarget>, InferenceType) {
+        // Priority 1: Snap targets (endpoints, corners, midpoints, edges)
+        if let Some(snap) = self.snap_to_target(raw_2d, 0.05) {
+            return (snap.point, Some(snap), InferenceType::None);
+        }
+
+        // Priority 2: H/V inference (only when actively drawing a line)
+        if let Some(start) = self.pending_start {
+            let (pos, inf) = Self::infer_constraint(start, raw_2d, shift_held);
+            // Apply grid snap to the inferred position
+            let grid = self.grid_spacing();
+            let pos = if grid > 0.0 { Self::snap_to_grid(pos, grid) } else { pos };
+            return (pos, None, inf);
+        }
+
+        // Priority 3: Grid snap
+        let grid = self.grid_spacing();
+        let pos = if grid > 0.0 { Self::snap_to_grid(raw_2d, grid) } else { raw_2d };
+        (pos, None, InferenceType::None)
+    }
+
+    /// Update preview dimensions (call after resolving cursor).
+    pub fn update_preview_dimensions(&mut self) {
+        if let (Some(start), Some(cursor)) = (self.pending_start, self.cursor_2d) {
+            let dx = cursor.x - start.x;
+            let dy = cursor.y - start.y;
+            let length = (dx * dx + dy * dy).sqrt();
+            let angle = dy.atan2(dx).to_degrees();
+            self.preview_length = Some(length);
+            self.preview_angle = Some(angle);
+        } else {
+            self.preview_length = None;
+            self.preview_angle = None;
+        }
     }
 
     pub fn to_3d(&self, p: Point2D) -> Vec3 {
@@ -66,6 +156,13 @@ impl Sketch {
         if start.distance_to(end) > 0.005 {
             self.entities.push(SketchEntity::Line { start, end });
             self.region_solver.mark_dirty();
+        }
+    }
+
+    pub fn add_construction_line(&mut self, start: Point2D, end: Point2D) {
+        if start.distance_to(end) > 0.005 {
+            self.entities.push(SketchEntity::ConstructionLine { start, end });
+            // No region_solver.mark_dirty() — construction lines don't affect regions
         }
     }
 
@@ -107,13 +204,52 @@ impl Sketch {
         self.entities.pop();
         self.region_solver.mark_dirty();
         self.selected_region = None;
+        self.selected_entity = None;
+    }
+
+    /// Select the nearest entity within threshold. Returns true if found.
+    pub fn select_entity_near(&mut self, pos: Point2D, threshold: f32) -> bool {
+        let mut best: Option<(usize, f32)> = None;
+        for (i, entity) in self.entities.iter().enumerate() {
+            let dist = entity.distance_to_point(pos);
+            if dist < threshold && (best.is_none() || dist < best.unwrap().1) {
+                best = Some((i, dist));
+            }
+        }
+        self.selected_entity = best.map(|(i, _)| i);
+        self.selected_entity.is_some()
+    }
+
+    /// Delete the currently selected entity.
+    pub fn delete_selected_entity(&mut self) {
+        if let Some(idx) = self.selected_entity.take() {
+            if idx < self.entities.len() {
+                self.entities.remove(idx);
+                self.region_solver.mark_dirty();
+                self.selected_region = None;
+            }
+        }
     }
 
     /// Get all CONFIRMED line segments as 3D pairs (for rendering).
+    /// Get confirmed line segments (excludes construction lines).
     pub fn confirmed_lines_3d(&self) -> Vec<(Vec3, Vec3)> {
         let mut lines = Vec::new();
         for entity in &self.entities {
-            self.entity_to_lines_3d(entity, &mut lines);
+            if !entity.is_construction() {
+                self.entity_to_lines_3d(entity, &mut lines);
+            }
+        }
+        lines
+    }
+
+    /// Get construction line segments (for rendering in different color).
+    pub fn construction_lines_3d(&self) -> Vec<(Vec3, Vec3)> {
+        let mut lines = Vec::new();
+        for entity in &self.entities {
+            if entity.is_construction() {
+                self.entity_to_lines_3d(entity, &mut lines);
+            }
         }
         lines
     }
@@ -159,7 +295,8 @@ impl Sketch {
 
     fn entity_to_lines_3d(&self, entity: &SketchEntity, lines: &mut Vec<(Vec3, Vec3)>) {
         match entity {
-            SketchEntity::Line { start, end } => {
+            SketchEntity::Line { start, end }
+            | SketchEntity::ConstructionLine { start, end } => {
                 lines.push((self.to_3d(*start), self.to_3d(*end)));
             }
             SketchEntity::Circle { center, radius } => {
@@ -256,6 +393,7 @@ impl Sketch {
                     ));
                 }
             }
+            SketchEntity::ConstructionLine { .. } => return None,
             SketchEntity::Line { .. } => {
                 // Walk backward to find chain start
                 let mut start_idx = self.entities.len() - 1;

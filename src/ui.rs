@@ -8,6 +8,20 @@ pub enum Tool {
     Line,
     Rect,
     Circle,
+    CLine,
+    Measure,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum SelectionMode {
+    Face,
+    Edge,
+}
+
+pub struct Measurement {
+    pub point_a: [f32; 3],
+    pub point_b: [f32; 3],
+    pub distance: f32,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -41,6 +55,19 @@ pub struct UiState {
     pub inset_request: Option<f32>,
     pub inset_amount: f32,
     pub import_request: bool,
+    pub new_scene_request: bool,
+    pub save_request: bool,
+    pub save_as_request: bool,
+    pub open_project_request: bool,
+    pub export_stl_request: bool,
+    pub export_obj_request: bool,
+    pub current_project_path: Option<std::path::PathBuf>,
+    // Measurement
+    pub measure_first_point: Option<[f32; 3]>,
+    pub active_measurement: Option<Measurement>,
+    // Selection mode
+    pub selection_mode: SelectionMode,
+    pub selected_edge: Option<([f32; 3], [f32; 3])>,
     pub chat_input: String,
     pub chat_history: Vec<ChatMessage>,
     pub selected_feature: Option<String>,
@@ -60,6 +87,15 @@ pub struct UiState {
     pub context_menu_pos: Option<egui::Pos2>,
     pub context_menu_face: Option<u32>,
     pub context_menu_action: Option<ContextAction>,
+    /// Whether a preview (extrude/cut/inset ghost) is currently showing
+    pub preview_active: bool,
+    /// Sketch preview dimensions (shown as floating labels)
+    pub sketch_preview_length: Option<f32>,
+    pub sketch_preview_angle: Option<f32>,
+    // Construction geometry
+    pub construction_selected: Option<crate::construction::ConstructionId>,
+    pub show_construction_planes: bool,
+    pub show_construction_axes: bool,
 }
 
 pub struct ChatMessage {
@@ -122,6 +158,17 @@ impl UiState {
             inset_request: None,
             inset_amount: 0.1,
             import_request: false,
+            new_scene_request: false,
+            save_request: false,
+            save_as_request: false,
+            open_project_request: false,
+            export_stl_request: false,
+            export_obj_request: false,
+            current_project_path: None,
+            measure_first_point: None,
+            active_measurement: None,
+            selection_mode: SelectionMode::Face,
+            selected_edge: None,
             chat_input: String::new(),
             chat_history: vec![
                 ChatMessage {
@@ -144,6 +191,12 @@ impl UiState {
             context_menu_pos: None,
             context_menu_face: None,
             context_menu_action: None,
+            preview_active: false,
+            sketch_preview_length: None,
+            sketch_preview_angle: None,
+            construction_selected: None,
+            show_construction_planes: true,
+            show_construction_axes: true,
         }
     }
 
@@ -156,6 +209,8 @@ impl UiState {
         }
         self.draw_toasts(ctx);
         self.draw_context_menu(ctx);
+        self.draw_dimension_label(ctx);
+        self.draw_sketch_dimensions(ctx);
     }
 
     fn draw_top_toolbar(&mut self, ctx: &egui::Context) {
@@ -168,9 +223,28 @@ impl UiState {
                     ui.label(egui::RichText::new("GraniteX").strong().size(13.0));
                     ui.separator();
 
+                    // File operations
+                    if ui.add(egui::Button::new(egui::RichText::new("New").size(11.0))).clicked() {
+                        self.new_scene_request = true;
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new("Save").size(11.0))).clicked() {
+                        self.save_request = true;
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new("Open").size(11.0))).clicked() {
+                        self.open_project_request = true;
+                    }
                     if ui.add(egui::Button::new(egui::RichText::new("Import").size(11.0))).clicked() {
                         self.import_request = true;
                     }
+
+                    // Export dropdown
+                    egui::ComboBox::from_id_salt("export_combo")
+                        .selected_text(egui::RichText::new("Export").size(11.0))
+                        .width(50.0)
+                        .show_ui(ui, |ui| {
+                            if ui.button("STL").clicked() { self.export_stl_request = true; }
+                            if ui.button("OBJ").clicked() { self.export_obj_request = true; }
+                        });
 
                     ui.separator();
 
@@ -193,6 +267,31 @@ impl UiState {
                         egui::RichText::new("Fillet").size(11.0).weak()
                     )).on_disabled_hover_text("Coming soon");
 
+                    // Measure tool
+                    let measure_btn = egui::Button::new(egui::RichText::new("Measure").size(11.0))
+                        .selected(self.active_tool == Tool::Measure);
+                    if ui.add(measure_btn).clicked() {
+                        self.active_tool = if self.active_tool == Tool::Measure { Tool::Select } else { Tool::Measure };
+                        if self.active_tool != Tool::Measure {
+                            self.measure_first_point = None;
+                            self.active_measurement = None;
+                        }
+                    }
+
+                    ui.separator();
+
+                    // Selection mode toggle
+                    let mode_label = match self.selection_mode {
+                        SelectionMode::Face => "Face",
+                        SelectionMode::Edge => "Edge",
+                    };
+                    if ui.add(egui::Button::new(egui::RichText::new(mode_label).size(11.0))).on_hover_text("Tab to toggle").clicked() {
+                        self.selection_mode = match self.selection_mode {
+                            SelectionMode::Face => SelectionMode::Edge,
+                            SelectionMode::Edge => SelectionMode::Face,
+                        };
+                    }
+
                     ui.separator();
 
                     // Drawing tools
@@ -201,6 +300,7 @@ impl UiState {
                         (Tool::Line,   "Line"),
                         (Tool::Rect,   "Rect"),
                         (Tool::Circle, "Circle"),
+                        (Tool::CLine,  "CLine"),
                     ];
                     for (tool, label) in &draw_tools {
                         let btn = egui::Button::new(egui::RichText::new(*label).size(11.0))
@@ -250,32 +350,86 @@ impl UiState {
                 egui::CollapsingHeader::new(egui::RichText::new("Origin").size(11.0))
                     .default_open(true)
                     .show(ui, |ui| {
-                        for plane in ["XY Plane", "XZ Plane", "YZ Plane"] {
-                            let is_sel = self.selected_feature.as_deref() == Some(plane);
-                            let label = if is_sel {
-                                egui::RichText::new(format!("  {}", plane)).size(11.0).strong().color(egui::Color32::from_rgb(100, 160, 255))
-                            } else {
-                                egui::RichText::new(format!("  {}", plane)).size(11.0)
-                            };
-                            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
-                                self.selected_feature = Some(plane.to_string());
-                            }
+                        // Planes
+                        let plane_names = ["XY Plane", "XZ Plane", "YZ Plane"];
+                        let plane_colors = [
+                            egui::Color32::from_rgb(80, 80, 230),  // XY = blue
+                            egui::Color32::from_rgb(50, 200, 50),  // XZ = green
+                            egui::Color32::from_rgb(230, 50, 50),  // YZ = red
+                        ];
+                        for (i, (name, color)) in plane_names.iter().zip(plane_colors.iter()).enumerate() {
+                            let id = crate::construction::ConstructionId::Plane(i);
+                            let is_sel = self.construction_selected == Some(id);
+                            ui.horizontal(|ui| {
+                                let dot = egui::RichText::new("*").size(11.0).color(*color);
+                                ui.label(dot);
+                                let label = if is_sel {
+                                    egui::RichText::new(*name).size(11.0).strong().color(egui::Color32::from_rgb(100, 160, 255))
+                                } else {
+                                    egui::RichText::new(*name).size(11.0)
+                                };
+                                if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                                    self.construction_selected = if is_sel { None } else { Some(id) };
+                                    self.selected_feature = Some(name.to_string());
+                                }
+                            });
                         }
+
+                        // Axes
+                        let axis_names = ["X Axis", "Y Axis", "Z Axis"];
+                        let axis_colors = [
+                            egui::Color32::from_rgb(230, 50, 50),  // X = red
+                            egui::Color32::from_rgb(50, 200, 50),  // Y = green
+                            egui::Color32::from_rgb(80, 100, 230), // Z = blue
+                        ];
+                        for (i, (name, color)) in axis_names.iter().zip(axis_colors.iter()).enumerate() {
+                            let id = crate::construction::ConstructionId::Axis(i);
+                            let is_sel = self.construction_selected == Some(id);
+                            ui.horizontal(|ui| {
+                                let dot = egui::RichText::new("-").size(11.0).color(*color);
+                                ui.label(dot);
+                                let label = if is_sel {
+                                    egui::RichText::new(*name).size(11.0).strong().color(egui::Color32::from_rgb(100, 160, 255))
+                                } else {
+                                    egui::RichText::new(*name).size(11.0)
+                                };
+                                if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                                    self.construction_selected = if is_sel { None } else { Some(id) };
+                                    self.selected_feature = Some(name.to_string());
+                                }
+                            });
+                        }
+
+                        // Visibility toggles
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.show_construction_planes, egui::RichText::new("Planes").size(9.0));
+                            ui.checkbox(&mut self.show_construction_axes, egui::RichText::new("Axes").size(9.0));
+                        });
                     });
 
                 ui.separator();
 
-                egui::CollapsingHeader::new(egui::RichText::new("Bodies").size(11.0))
+                egui::CollapsingHeader::new(egui::RichText::new("History").size(11.0))
                     .default_open(true)
                     .show(ui, |ui| {
-                        let is_sel = self.selected_feature.as_deref() == Some("Cube");
-                        let label = if is_sel {
-                            egui::RichText::new("  Cube").size(11.0).strong().color(egui::Color32::from_rgb(100, 160, 255))
-                        } else {
-                            egui::RichText::new("  Cube").size(11.0)
-                        };
-                        if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
-                            self.selected_feature = Some("Cube".to_string());
+                        ui.label(egui::RichText::new("  Cube (base)").size(10.0).weak());
+                        for (i, op) in self.operation_history.iter().enumerate() {
+                            let icon = if op.starts_with("Extrude") { "+" }
+                                else if op.starts_with("Cut") { "-" }
+                                else if op.starts_with("Inset") { ">" }
+                                else if op.starts_with("Import") { "@" }
+                                else { "*" };
+                            let text = format!("  {} {}", icon, op);
+                            let color = if op.starts_with("Cut") {
+                                egui::Color32::from_rgb(230, 100, 80)
+                            } else {
+                                egui::Color32::from_rgb(180, 180, 190)
+                            };
+                            ui.label(egui::RichText::new(text).size(10.0).color(color));
+                        }
+                        if self.operation_history.is_empty() {
+                            ui.label(egui::RichText::new("  (no operations yet)").size(9.0).weak());
                         }
                     });
 
@@ -298,17 +452,25 @@ impl UiState {
                         if ui.button(egui::RichText::new("Apply Extrude").size(11.0)).clicked() {
                             self.extrude_request = Some(self.extrude_distance);
                         }
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("Or drag on viewport").weak().size(9.0));
                     }
-                    Tool::Line | Tool::Rect | Tool::Circle => {
+                    Tool::Line | Tool::Rect | Tool::Circle | Tool::CLine => {
                         let name = match self.active_tool {
                             Tool::Line => "Line",
                             Tool::Rect => "Rectangle",
                             Tool::Circle => "Circle",
+                            Tool::CLine => "Construction Line",
                             _ => "",
                         };
-                        ui.label(egui::RichText::new(name).strong().size(11.0).color(egui::Color32::from_rgb(100, 200, 100)));
+                        let color = if self.active_tool == Tool::CLine {
+                            egui::Color32::from_rgb(255, 165, 50) // orange for construction
+                        } else {
+                            egui::Color32::from_rgb(100, 200, 100)
+                        };
+                        ui.label(egui::RichText::new(name).strong().size(11.0).color(color));
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new("Click on a face to draw").weak().size(9.0));
+                        ui.label(egui::RichText::new("Click on a face or plane").weak().size(9.0));
                         if self.sketch_entity_count > 0 {
                             ui.add_space(2.0);
                             ui.label(egui::RichText::new(format!("Entities: {}", self.sketch_entity_count)).size(10.0));
@@ -350,6 +512,26 @@ impl UiState {
                         }
                         ui.add_space(4.0);
                         ui.label(egui::RichText::new("Select a face, then inset").weak().size(9.0));
+                    }
+                    Tool::Measure => {
+                        ui.label(egui::RichText::new("Measure").strong().size(11.0).color(egui::Color32::from_rgb(255, 200, 50)));
+                        ui.add_space(4.0);
+                        if let Some(ref m) = self.active_measurement {
+                            ui.label(egui::RichText::new(format!("Distance: {:.4} m", m.distance)).size(11.0));
+                            ui.add_space(2.0);
+                            ui.label(egui::RichText::new(format!("dX: {:.4}", m.point_b[0] - m.point_a[0])).size(10.0).weak());
+                            ui.label(egui::RichText::new(format!("dY: {:.4}", m.point_b[1] - m.point_a[1])).size(10.0).weak());
+                            ui.label(egui::RichText::new(format!("dZ: {:.4}", m.point_b[2] - m.point_a[2])).size(10.0).weak());
+                            ui.add_space(4.0);
+                            if ui.button(egui::RichText::new("Clear").size(11.0)).clicked() {
+                                self.active_measurement = None;
+                                self.measure_first_point = None;
+                            }
+                        } else if self.measure_first_point.is_some() {
+                            ui.label(egui::RichText::new("Click second point").weak().size(9.0));
+                        } else {
+                            ui.label(egui::RichText::new("Click first point on model").weak().size(9.0));
+                        }
                     }
                     _ => {
                         let name = match self.active_tool {
@@ -427,6 +609,7 @@ impl UiState {
                         Tool::Cut => "Cut", Tool::Inset => "Inset",
                         Tool::Fillet => "Fillet", Tool::Line => "Line",
                         Tool::Rect => "Rect", Tool::Circle => "Circle",
+                        Tool::Measure => "Measure", Tool::CLine => "CLine",
                     };
                     ui.label(egui::RichText::new(tool_name).strong().size(10.0));
                     ui.separator();
@@ -445,6 +628,23 @@ impl UiState {
                             info += &format!("  A:{:.4}", a);
                         }
                         ui.label(egui::RichText::new(info).size(10.0).color(egui::Color32::from_rgb(100, 160, 255)));
+                    }
+
+                    // Measurement display
+                    if let Some(ref m) = self.active_measurement {
+                        ui.separator();
+                        ui.label(egui::RichText::new(format!("Dist: {:.4} m", m.distance))
+                            .size(10.0).strong().color(egui::Color32::from_rgb(255, 200, 50)));
+                    } else if self.measure_first_point.is_some() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Click second point...")
+                            .size(10.0).color(egui::Color32::from_rgb(255, 200, 50)));
+                    }
+
+                    // Edge selection info
+                    if self.selection_mode == SelectionMode::Edge {
+                        ui.separator();
+                        ui.label(egui::RichText::new("[Edge]").size(10.0).color(egui::Color32::from_rgb(200, 150, 255)));
                     }
 
                     // Cursor 3D position
@@ -508,6 +708,79 @@ impl UiState {
         if ctx.input(|i| i.pointer.any_pressed()) && !resp.response.hovered() {
             self.context_menu_pos = None;
         }
+    }
+
+    fn draw_dimension_label(&self, ctx: &egui::Context) {
+        if !self.preview_active { return; }
+
+        let (label, color) = match self.active_tool {
+            Tool::Extrude => {
+                let d = self.extrude_distance;
+                (format!("{:.3} m", d), egui::Color32::from_rgb(100, 160, 255))
+            }
+            Tool::Cut => {
+                let d = self.cut_depth;
+                (format!("{:.3} m", d), egui::Color32::from_rgb(230, 100, 80))
+            }
+            Tool::Inset => {
+                let d = self.inset_amount;
+                (format!("{:.3} m", d), egui::Color32::from_rgb(100, 200, 200))
+            }
+            _ => return,
+        };
+
+        // Show floating dimension label near center-right of viewport
+        let screen = ctx.screen_rect();
+        let pos = egui::pos2(screen.center().x + 60.0, screen.center().y - 30.0);
+
+        egui::Area::new(egui::Id::new("dimension_label"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                let frame = egui::Frame::none()
+                    .fill(egui::Color32::from_rgba_unmultiplied(20, 20, 25, 200))
+                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                    .rounding(3.0)
+                    .stroke(egui::Stroke::new(1.0, color));
+                frame.show(ui, |ui| {
+                    ui.label(egui::RichText::new(label)
+                        .size(16.0)
+                        .strong()
+                        .color(color));
+                });
+            });
+    }
+
+    fn draw_sketch_dimensions(&self, ctx: &egui::Context) {
+        let Some(length) = self.sketch_preview_length else { return };
+        if length < 0.001 { return; }
+
+        let mut text = format!("{:.3} m", length);
+        if let Some(angle) = self.sketch_preview_angle {
+            text += &format!("  {:.1}\u{00B0}", angle);
+        }
+
+        // Show near cursor
+        let screen = ctx.screen_rect();
+        let pos = egui::pos2(screen.center().x + 40.0, screen.center().y + 20.0);
+
+        egui::Area::new(egui::Id::new("sketch_dim_label"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                let frame = egui::Frame::none()
+                    .fill(egui::Color32::from_rgba_unmultiplied(20, 25, 20, 180))
+                    .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+                    .rounding(3.0)
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 200, 100)));
+                frame.show(ui, |ui| {
+                    ui.label(egui::RichText::new(text)
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(150, 230, 150)));
+                });
+            });
     }
 
     fn draw_toasts(&mut self, ctx: &egui::Context) {

@@ -162,6 +162,30 @@
 Before: imported cylinder = faceted octagon. Sphere = disco ball. Every curved surface screamed "wrong."
 After: imported cylinder = smooth cylinder. Sphere = smooth sphere. Looks like a real CAD tool.
 
+## 2026-03-27 — Session 11: AI Agent Vision Documentation
+
+### Documentation
+- Created **AGENT_VISION.md** — comprehensive architecture document for the conversational AI agent
+  - Two-client model (UI + Agent both call Operation API)
+  - Agent ↔ Engine message protocol (execute, camera, highlight, query, ask_user)
+  - Agent reasoning model (procedural planning, ambiguity handling, error recovery)
+  - GX script as agent output format
+  - Implementation phases (A through F)
+  - Comparison with existing AI+CAD approaches
+- Created **AGENT_CRITIQUE.md** — adversarial analysis of the vision
+  - 15 failure modes and mitigation strategies
+  - Top 5 risks: TNP, LLM spatial reasoning, state sync, rendering complexity, token budget
+  - Deep analysis: camera view planning, preview system limits, undo grouping, coordinate systems
+  - Security analysis of GX parser as trust boundary
+- Updated IDEAS.md with expanded AI agent section
+
+### Key Architectural Insights
+- LLM should specify INTENT, engine should compute COORDINATES (LLMs can't do spatial math)
+- GX script needs high-level placement primitives (offset_from_edges, face_center) not raw coords
+- Agent requires multi-pass renderer (opaque → transparent → ghost → labels → UI)
+- Turn-based state ownership needed (agent working → UI locked except camera)
+- Feature tree is essential for agent context (not just parametric editing)
+
 ## 2026-03-27 — Session 10: Deep CAD Audit + Kernel Decision
 
 ### Full Codebase Audit vs. SolidWorks
@@ -175,6 +199,18 @@ Systematic audit of every renderer and geometry file, comparing our approach to 
 - **Preview z-fighting fix**: Base faces offset ±0.001 along normal to prevent z-fighting with underlying mesh
 - **Edge depth bias tuned**: Less aggressive slope_scale, tighter clamp to prevent edge pop-in at shallow angles
 
+### SolidWorks UX Parity
+- **Snap points**: Cursor snaps to face corners (orange square), edge midpoints (cyan triangle), nearest edge point (magenta diamond), existing endpoints (yellow circle). Visual indicators show BEFORE clicking.
+- **Grid snapping**: Sketch points snap to 0.05m grid in the sketch plane.
+- **Dimension labels**: Floating distance value shown during extrude/cut/inset preview (blue/red/teal).
+- **Sketch dimensions**: Line length and angle shown during drawing (green label).
+- **H/V inference**: Lines auto-constrain to horizontal/vertical when close to axis.
+- **Construction lines**: `CLine` tool for reference geometry (not included in regions).
+- **Measure tool**: Click two points to show distance.
+- **Entity selection/deletion**: Click to select sketch entities, Delete key to remove.
+- **Edge picking**: Screen-space distance to mesh boundary edges (in picking.rs).
+- **Export**: STL/OBJ export stubs (coming soon).
+
 ### CAD Kernel Decision
 - Evaluated all Rust BREP options: truck (stalled, no fillets), Fornjot (paused), opencascade-rs (viable)
 - **Decision: opencascade-rs** — only option with fillets + robust booleans + STEP I/O
@@ -186,6 +222,26 @@ Systematic audit of every renderer and geometry file, comparing our approach to 
 - PROB-012: No topology (half-edge) — requires O(F×V) for adjacency
 - PROB-013: No parametric surfaces — cylinders always faceted, no fillets possible
 - PROB-014: No feature tree — operations are destructive, no parameter editing
+
+## 2026-03-27 — Session 12: File I/O, Selection Modes, Measurement & UX
+
+### File I/O
+- **New Scene (Ctrl+N)**: Resets the entire scene to a fresh state.
+- **Save/Load project (.gnx format)**: JSON-based custom format. Ctrl+S saves, Ctrl+O opens. Preserves full mesh state.
+- **Export STL/OBJ**: Binary STL export and OBJ export with normals. Available from toolbar/menu.
+- **serde/serde_json dependencies added** for serialization.
+
+### Selection & Interaction
+- **Multi-select (Shift+click)**: Toggles face selection — Shift+click adds/removes faces from the selection set.
+- **Edge selection mode**: Tab key toggles between face and edge selection modes. Click to select edges, selected edge shows length in status bar.
+- **Sketch entity selection & deletion**: Click to select sketch entities (lines, circles, etc.), Delete key removes them.
+
+### Tools
+- **Measurement tool**: M key activates. Two-click point-to-point distance measurement. Displays total distance plus dX/dY/dZ components.
+- **Construction lines (CLine tool)**: Dashed rendering for reference geometry. Not included in region computation.
+
+### Shortcuts
+- **Numpad view shortcuts**: 1 (Front), 3 (Right), 7 (Top), 0 (Isometric), with Ctrl variants for opposite views (Back, Left, Bottom).
 
 ## 2026-03-26 — Session 8: CAD Kernel Research
 

@@ -92,6 +92,20 @@ impl Camera {
         self.distance = self.distance.clamp(0.1, 500.0);
     }
 
+    /// Zoom toward a 3D point (SolidWorks-style).
+    /// The orbit center drifts toward the point under the cursor as you zoom in.
+    pub fn zoom_toward(&mut self, delta: f32, world_point: Vec3) {
+        let factor = delta * 0.1;
+
+        // Shift orbit center toward the cursor point (stronger when zooming in)
+        if factor > 0.0 {
+            self.target = self.target + (world_point - self.target) * factor * 0.4;
+        }
+
+        self.distance *= 1.0 - factor;
+        self.distance = self.distance.clamp(0.1, 500.0);
+    }
+
     /// Start animating to a target view (smooth transition).
     pub fn set_view(&mut self, yaw: f32, pitch: f32) {
         self.start_yaw = self.yaw;
@@ -145,6 +159,21 @@ impl Camera {
 
     pub fn projection_matrix(&self) -> Mat4 {
         Mat4::perspective_rh(self.fov_y, self.aspect, self.z_near, self.z_far)
+    }
+
+    /// Get camera state for serialization.
+    pub fn state(&self) -> ([f32; 3], f32, f32, f32) {
+        ([self.target.x, self.target.y, self.target.z], self.distance, self.yaw, self.pitch)
+    }
+
+    /// Restore camera state from deserialized data.
+    pub fn restore_state(&mut self, target: [f32; 3], distance: f32, yaw: f32, pitch: f32) {
+        self.target = Vec3::from(target);
+        self.distance = distance;
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.target_yaw = None;
+        self.target_pitch = None;
     }
 
     pub fn uniform(&self) -> CameraUniform {

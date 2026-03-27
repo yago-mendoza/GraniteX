@@ -1,6 +1,7 @@
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
 
-use crate::ui::Tool;
+use crate::ui::{Tool, SelectionMode};
 use super::App;
 
 impl App {
@@ -67,11 +68,19 @@ impl App {
                             if !self.input.left_was_drag {
                                 let sx = self.input.cursor_pos.0 as f32;
                                 let sy = self.input.cursor_pos.1 as f32;
-                                if self.is_drawing_tool() {
+                                if self.ui.active_tool == Tool::Measure {
+                                    self.handle_measure_click(sx, sy);
+                                } else if self.is_drawing_tool() {
                                     self.handle_draw_click(sx, sy);
+                                } else if self.ui.selection_mode == SelectionMode::Edge {
+                                    self.handle_edge_click(sx, sy);
                                 } else if !self.try_select_region(sx, sy) {
-                                    if let Some(r) = &mut self.renderer {
-                                        r.try_select_face(sx, sy);
+                                    // Try construction geometry first, then mesh faces
+                                    if !self.try_select_construction(sx, sy) {
+                                        let shift = self.input.modifiers.shift_key();
+                                        if let Some(r) = &mut self.renderer {
+                                            r.try_select_face_multi(sx, sy, shift);
+                                        }
                                     }
                                 }
                             }
@@ -164,7 +173,12 @@ impl App {
                     MouseScrollDelta::LineDelta(_, y) => *y,
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.01,
                 };
-                if let Some(r) = &mut self.renderer { r.zoom(scroll); }
+                if let Some(r) = &mut self.renderer {
+                    // SolidWorks-style: zoom toward cursor position
+                    let sx = self.input.cursor_pos.0 as f32;
+                    let sy = self.input.cursor_pos.1 as f32;
+                    r.zoom_toward_screen(scroll, sx, sy);
+                }
             }
 
             _ => {}
@@ -230,14 +244,50 @@ impl App {
                         }
                     }
 
-                    // Ctrl+O = Import file
-                    Key::Character(c) if c.as_str() == "o" && ctrl => {
-                        self.ui.import_request = true;
+                    // Ctrl+N = New scene
+                    Key::Character(c) if c.as_str() == "n" && ctrl => {
+                        self.ui.new_scene_request = true;
                     }
 
-                    // Delete = Delete selected face
+                    // Ctrl+S = Save, Ctrl+Shift+S = Save As
+                    Key::Character(c) if (c.as_str() == "s" || c.as_str() == "S") && ctrl => {
+                        if self.input.modifiers.shift_key() {
+                            self.ui.save_as_request = true;
+                        } else {
+                            self.ui.save_request = true;
+                        }
+                    }
+
+                    // Ctrl+O = Open project
+                    Key::Character(c) if c.as_str() == "o" && ctrl => {
+                        self.ui.open_project_request = true;
+                    }
+
+                    // Ctrl+E = Export STL
+                    Key::Character(c) if c.as_str() == "e" && ctrl => {
+                        self.ui.export_stl_request = true;
+                    }
+
+                    // Delete = Delete selected sketch entity, or selected face
                     Key::Named(NamedKey::Delete) => {
-                        self.delete_selected_face();
+                        let mut handled = false;
+                        if let Some(sketch) = &mut self.sketch {
+                            if sketch.selected_entity.is_some() {
+                                sketch.delete_selected_entity();
+                                handled = true;
+                            }
+                        }
+                        if !handled {
+                            self.delete_selected_face();
+                        }
+                    }
+
+                    // Tab = Toggle face/edge selection mode
+                    Key::Named(NamedKey::Tab) => {
+                        self.ui.selection_mode = match self.ui.selection_mode {
+                            SelectionMode::Face => SelectionMode::Edge,
+                            SelectionMode::Edge => SelectionMode::Face,
+                        };
                     }
 
                     // Home = Zoom to fit (SolidWorks: F key)
@@ -258,6 +308,11 @@ impl App {
                             "x" => self.ui.active_tool = Tool::Cut,
                             "i" => self.ui.active_tool = Tool::Inset,
                             "f" => self.ui.active_tool = Tool::Fillet,
+                            "m" => {
+                                self.ui.active_tool = Tool::Measure;
+                                self.ui.measure_first_point = None;
+                                self.ui.active_measurement = None;
+                            }
                             "w" => self.ui.show_wireframe = !self.ui.show_wireframe,
                             "g" => self.ui.show_grid = !self.ui.show_grid,
                             _ => {}
@@ -266,7 +321,47 @@ impl App {
 
                     _ => {}
                 }
+
+                // Numpad view shortcuts (match physical keys for numpad)
+                let ctrl = self.input.modifiers.control_key();
+                match key_event.physical_key {
+                    PhysicalKey::Code(KeyCode::Numpad1) => {
+                        self.ui.view_request = Some(if ctrl { crate::ui::ViewPreset::Back } else { crate::ui::ViewPreset::Front });
+                    }
+                    PhysicalKey::Code(KeyCode::Numpad3) => {
+                        self.ui.view_request = Some(if ctrl { crate::ui::ViewPreset::Left } else { crate::ui::ViewPreset::Right });
+                    }
+                    PhysicalKey::Code(KeyCode::Numpad7) => {
+                        self.ui.view_request = Some(if ctrl { crate::ui::ViewPreset::Bottom } else { crate::ui::ViewPreset::Top });
+                    }
+                    PhysicalKey::Code(KeyCode::Numpad0) => {
+                        self.ui.view_request = Some(crate::ui::ViewPreset::Isometric);
+                    }
+                    _ => {}
+                }
             }
         }
     }
+
+    /// Try to select construction geometry (plane or axis) at screen coords.
+    /// Returns true if something was selected.
+    fn try_select_construction(&mut self, screen_x: f32, screen_y: f32) -> bool {
+        let Some(renderer) = &self.renderer else { return false };
+        let (ray_o, ray_d) = renderer.screen_to_ray(screen_x, screen_y);
+        let extent = (renderer.camera_distance() * 0.6).clamp(0.5, 10.0);
+
+        if let Some((id, _dist)) = self.construction.pick(ray_o, ray_d, extent) {
+            self.ui.construction_selected = Some(id);
+            // Deselect mesh face when selecting construction geometry
+            if let Some(r) = &mut self.renderer {
+                r.selected_face = None;
+                r.mesh_pipeline.set_selected_face(&r.gpu.queue, None);
+            }
+            true
+        } else {
+            self.ui.construction_selected = None;
+            false
+        }
+    }
+
 }

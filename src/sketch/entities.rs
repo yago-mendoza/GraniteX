@@ -31,6 +31,9 @@ impl Point2D {
 pub enum SketchEntity {
     Line { start: Point2D, end: Point2D },
     Circle { center: Point2D, radius: f32 },
+    /// Construction line — reference geometry, not included in region computation.
+    /// Used as revolve axes, dimension references, etc.
+    ConstructionLine { start: Point2D, end: Point2D },
 }
 
 impl SketchEntity {
@@ -39,6 +42,26 @@ impl SketchEntity {
         match self {
             SketchEntity::Line { start, end } => vec![*start, *end],
             SketchEntity::Circle { center, .. } => vec![*center],
+            SketchEntity::ConstructionLine { start, end } => vec![*start, *end],
+        }
+    }
+
+    /// Whether this is a construction entity (not included in regions).
+    pub fn is_construction(&self) -> bool {
+        matches!(self, SketchEntity::ConstructionLine { .. })
+    }
+
+    /// Minimum distance from a 2D point to this entity.
+    pub fn distance_to_point(&self, p: Point2D) -> f32 {
+        match self {
+            SketchEntity::Line { start, end }
+            | SketchEntity::ConstructionLine { start, end } => {
+                let closest = p.closest_on_segment(*start, *end);
+                p.distance_to(closest)
+            }
+            SketchEntity::Circle { center, radius } => {
+                (p.distance_to(*center) - radius).abs()
+            }
         }
     }
 }
@@ -57,4 +80,12 @@ pub enum SnapType {
 pub struct SnapTarget {
     pub point: Point2D,
     pub snap_type: SnapType,
+}
+
+/// H/V inference type for line drawing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InferenceType {
+    None,
+    Horizontal,
+    Vertical,
 }

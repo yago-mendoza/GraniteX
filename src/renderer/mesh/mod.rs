@@ -345,6 +345,17 @@ impl Mesh {
         Some(positions)
     }
 
+    /// Construct a mesh from raw data (for project loading).
+    pub fn from_raw(
+        vertices: Vec<Vertex>,
+        indices: Vec<u32>,
+        next_face_id: u32,
+        stored_boundaries: std::collections::HashMap<u32, Vec<Vec3>>,
+        stored_holes: std::collections::HashMap<u32, Vec<Vec<Vec3>>>,
+    ) -> Self {
+        Self { vertices, indices, next_face_id, stored_boundaries, stored_holes }
+    }
+
     // --- Accessors ---
 
     pub fn next_face_id(&self) -> u32 {

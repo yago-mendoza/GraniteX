@@ -181,14 +181,27 @@ impl MeshPipeline {
             source: wgpu::ShaderSource::Wgsl(include_str!("edges.wgsl").into()),
         });
 
+        // Edge vertex: position (vec3) + two face_ids packed as u32 (for selection highlighting)
         let edge_vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+            array_stride: (3 * 4 + 4 + 4) as wgpu::BufferAddress, // 3 floats + 2 u32s = 20 bytes
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32x3,
-            }],
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3, // position
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Uint32, // face_id_a
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Uint32, // face_id_b
+                },
+            ],
         };
 
         let edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -329,37 +342,47 @@ impl MeshPipeline {
             }
         }
 
-        // Pass 2: Emit edges.
-        // Simple, correct rule — same as SolidWorks:
-        //   - 2+ different face_ids → DRAW (face boundary)
-        //   - 1 face, 1 triangle → DRAW (open mesh boundary)
-        //   - 1 face, 2+ triangles → SKIP (internal triangulation edge)
-        let mut positions: Vec<f32> = Vec::new();
+        // Pass 2: Emit edges with face_id info (for selection highlighting).
+        // Each edge vertex = [f32; 3] position + [u32; 2] face_ids
+        // Format: [px, py, pz, face_a_bits, face_b_bits] × 2 vertices per edge
+        let mut data: Vec<u8> = Vec::new();
+        let mut vertex_count = 0u32;
+
+        let emit_edge = |data: &mut Vec<u8>, count: &mut u32, pos: &[f32; 3], fa: u32, fb: u32| {
+            data.extend_from_slice(bytemuck::cast_slice(pos));        // 12 bytes
+            data.extend_from_slice(&fa.to_le_bytes());                // 4 bytes
+            data.extend_from_slice(&fb.to_le_bytes());                // 4 bytes = 20 total
+            *count += 1;
+        };
+
         for info in edge_faces.values() {
+            let face_ids: Vec<u32> = info.faces.iter().copied().collect();
+            let (fa, fb) = if face_ids.len() >= 2 {
+                (face_ids[0], face_ids[1])
+            } else {
+                (face_ids[0], face_ids[0])
+            };
+
             if info.faces.len() > 1 {
-                // Different faces meet here → always a visible edge
-                positions.extend_from_slice(&info.pa);
-                positions.extend_from_slice(&info.pb);
+                emit_edge(&mut data, &mut vertex_count, &info.pa, fa, fb);
+                emit_edge(&mut data, &mut vertex_count, &info.pb, fa, fb);
             } else if info.tri_count == 1 {
-                // Open mesh boundary → visible edge
-                positions.extend_from_slice(&info.pa);
-                positions.extend_from_slice(&info.pb);
+                emit_edge(&mut data, &mut vertex_count, &info.pa, fa, fb);
+                emit_edge(&mut data, &mut vertex_count, &info.pb, fa, fb);
             }
-            // else: internal edge within a face → skip
         }
 
-        if positions.is_empty() {
+        if vertex_count == 0 {
             return (None, 0);
         }
 
-        let num_vertices = (positions.len() / 3) as u32;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Edge Vertices"),
-            contents: bytemuck::cast_slice(&positions),
+            contents: &data,
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        (Some(buffer), num_vertices)
+        (Some(buffer), vertex_count)
     }
 
     /// Recreate vertex/index buffers after mesh modification (extrude, etc.)

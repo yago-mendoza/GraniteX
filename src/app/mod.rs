@@ -1,6 +1,7 @@
 mod input;
 mod mesh_ops;
 mod sketch_ops;
+mod measure;
 
 use anyhow::Result;
 use winit::application::ApplicationHandler;
@@ -10,6 +11,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 use crate::commands::CommandHistory;
+use crate::construction::ConstructionGeometry;
 use crate::renderer::Renderer;
 use crate::sketch::Sketch;
 use crate::ui::{ContextAction, Tool, UiState, ViewPreset};
@@ -39,6 +41,7 @@ pub(super) struct App {
     pub(super) input: InputState,
     pub(super) sketch: Option<Sketch>,
     pub(super) history: CommandHistory,
+    pub(super) construction: ConstructionGeometry,
 }
 
 impl App {
@@ -52,11 +55,48 @@ impl App {
             input: InputState::default(),
             sketch: None,
             history: CommandHistory::new(),
+            construction: ConstructionGeometry::new(),
         }
     }
 
     fn apply_ui_state(&mut self) {
-        // Handle import + context menu before borrowing renderer (avoids double-borrow)
+        // Handle file operations before borrowing renderer
+        if self.ui.new_scene_request {
+            self.ui.new_scene_request = false;
+            if let Some(r) = &mut self.renderer {
+                r.load_mesh(crate::renderer::Mesh::cube());
+                self.history.clear();
+                self.sketch = None;
+                self.ui.operation_history.clear();
+                self.ui.current_project_path = None;
+                self.ui.active_measurement = None;
+                self.ui.measure_first_point = None;
+                self.ui.selected_edge = None;
+                self.ui.toasts.push(crate::ui::Toast::new("New scene".into()));
+            }
+        }
+
+        if self.ui.save_request || self.ui.save_as_request {
+            let save_as = self.ui.save_as_request;
+            self.ui.save_request = false;
+            self.ui.save_as_request = false;
+            self.save_project(save_as);
+        }
+
+        if self.ui.open_project_request {
+            self.ui.open_project_request = false;
+            self.open_project();
+        }
+
+        if self.ui.export_stl_request {
+            self.ui.export_stl_request = false;
+            self.export_file("stl");
+        }
+        if self.ui.export_obj_request {
+            self.ui.export_obj_request = false;
+            self.export_file("obj");
+        }
+
         if self.ui.import_request {
             self.ui.import_request = false;
             self.open_file_dialog();
@@ -90,6 +130,16 @@ impl App {
         renderer.show_wireframe = self.ui.show_wireframe;
         self.ui.wireframe_supported = renderer.has_wireframe();
 
+        // Sync construction geometry from UI
+        self.construction.selected = self.ui.construction_selected;
+        for plane in &mut self.construction.planes {
+            plane.visible = self.ui.show_construction_planes;
+        }
+        for axis in &mut self.construction.axes {
+            axis.visible = self.ui.show_construction_axes;
+        }
+        renderer.update_construction(&self.construction);
+
         // Extrude — from sketch region (atomic) or from selected face
         if let Some(distance) = self.ui.extrude_request.take() {
             self.history.save_state(&renderer.mesh);
@@ -102,7 +152,7 @@ impl App {
                 let pts = s.selected_region_3d()?;
                 let holes = s.selected_region_holes_3d();
                 let normal = s.plane.normal;
-                let parent_id = s.face_id;
+                let parent_id = s.face_id; // None for reference plane sketches
                 let plane = s.plane.clone();
                 Some((pts, holes, normal, parent_id, plane))
             });
@@ -114,8 +164,11 @@ impl App {
                     renderer.mesh.add_polygon_face_with_holes_flush(&region_pts, &holes, normal)
                 };
                 if let Some(cap) = renderer.mesh.extrude_face(base_face, distance) {
-                    if renderer.mesh.is_face_planar(parent_id) {
-                        Self::split_parent_face(&mut renderer.mesh, parent_id, &region_pts, &holes, &plane);
+                    // Only split parent face if sketching on a mesh face (not a reference plane)
+                    if let Some(pid) = parent_id {
+                        if renderer.mesh.is_face_planar(pid) {
+                            Self::split_parent_face(&mut renderer.mesh, pid, &region_pts, &holes, &plane);
+                        }
                     }
                     renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
                     renderer.selected_face = Some(cap);
@@ -129,6 +182,7 @@ impl App {
             if success {
                 self.sketch = None;
                 self.ui.toasts.push(crate::ui::Toast::new(format!("Extruded {:.2}m", distance)));
+                self.ui.operation_history.push(format!("Extrude {:.2}m", distance));
             }
             renderer.clear_preview();
         }
@@ -153,8 +207,10 @@ impl App {
                     renderer.mesh.add_polygon_face_with_holes_flush(&region_pts, &holes, normal)
                 };
                 if let Some(floor) = renderer.mesh.cut_face(base_face, depth) {
-                    if renderer.mesh.is_face_planar(parent_id) {
-                        Self::split_parent_face(&mut renderer.mesh, parent_id, &region_pts, &holes, &plane);
+                    if let Some(pid) = parent_id {
+                        if renderer.mesh.is_face_planar(pid) {
+                            Self::split_parent_face(&mut renderer.mesh, pid, &region_pts, &holes, &plane);
+                        }
                     }
                     renderer.mesh_pipeline.rebuild_buffers(&renderer.gpu.device, &renderer.mesh);
                     renderer.selected_face = Some(floor);
@@ -168,6 +224,7 @@ impl App {
             if success {
                 self.sketch = None;
                 self.ui.toasts.push(crate::ui::Toast::new(format!("Cut {:.2}m", depth)));
+                self.ui.operation_history.push(format!("Cut {:.2}m", depth));
             }
             renderer.clear_preview();
         }
@@ -194,13 +251,15 @@ impl App {
             Some((pts, normal))
         });
 
+        self.ui.preview_active = false;
         match self.ui.active_tool {
             Tool::Extrude => {
                 if let Some((pts, normal)) = &sketch_preview_data {
-                    // Preview from sketch region (no mesh face exists yet)
                     renderer.preview_from_points(pts, *normal, self.ui.extrude_distance);
+                    self.ui.preview_active = true;
                 } else if renderer.selected_face.is_some() {
                     renderer.update_extrude_preview(self.ui.extrude_distance);
+                    self.ui.preview_active = true;
                 } else {
                     renderer.clear_preview();
                 }
@@ -208,8 +267,10 @@ impl App {
             Tool::Cut => {
                 if let Some((pts, normal)) = &sketch_preview_data {
                     renderer.preview_cut_from_points(pts, *normal, self.ui.cut_depth);
+                    self.ui.preview_active = true;
                 } else if renderer.selected_face.is_some() {
                     renderer.update_cut_preview(self.ui.cut_depth);
+                    self.ui.preview_active = true;
                 } else {
                     renderer.clear_preview();
                 }
@@ -217,6 +278,7 @@ impl App {
             Tool::Inset => {
                 if renderer.selected_face.is_some() {
                     renderer.update_inset_preview(self.ui.inset_amount);
+                    self.ui.preview_active = true;
                 } else {
                     renderer.clear_preview();
                 }
@@ -224,22 +286,27 @@ impl App {
             _ => renderer.clear_preview(),
         }
 
-        // Update sketch cursor
+        // Update sketch cursor (snap + H/V inference pipeline)
         if let Some(sketch) = &mut self.sketch {
             let (ray_o, ray_d) = renderer.screen_to_ray(
                 self.input.cursor_pos.0 as f32,
                 self.input.cursor_pos.1 as f32,
             );
             if let Some(hit) = sketch.plane.ray_intersect(ray_o, ray_d) {
-                let mut pos = sketch.world_to_2d(hit);
-                if let Some(snap) = sketch.snap_to_target(pos, 0.05) {
-                    pos = snap.point;
-                }
+                let raw = sketch.world_to_2d(hit);
+                let shift = self.input.modifiers.shift_key();
+                let (pos, _snap, inference) = sketch.resolve_cursor(raw, shift);
                 sketch.cursor_2d = Some(pos);
+                sketch.active_inference = inference;
+                sketch.update_preview_dimensions();
             }
             self.ui.sketch_entity_count = sketch.entities.len();
+            self.ui.sketch_preview_length = sketch.preview_length;
+            self.ui.sketch_preview_angle = sketch.preview_angle;
         } else {
             self.ui.sketch_entity_count = 0;
+            self.ui.sketch_preview_length = None;
+            self.ui.sketch_preview_angle = None;
         }
 
         // Compute regions (needs &mut sketch for lazy recompute)
@@ -286,10 +353,15 @@ impl App {
 
         // Hover pre-highlight (only when cursor moved, not dragging, not over egui)
         if self.input.cursor_moved && !self.input.middle_pressed && !self.input.left_pressed && !self.egui_ctx.wants_pointer_input() {
-            renderer.update_hover(
-                self.input.cursor_pos.0 as f32,
-                self.input.cursor_pos.1 as f32,
-            );
+            let sx = self.input.cursor_pos.0 as f32;
+            let sy = self.input.cursor_pos.1 as f32;
+            renderer.update_hover(sx, sy);
+
+            // Construction geometry hover
+            let (ray_o, ray_d) = renderer.screen_to_ray(sx, sy);
+            let extent = (renderer.camera_distance() * 0.6).clamp(0.5, 10.0);
+            self.construction.hovered = self.construction.pick(ray_o, ray_d, extent).map(|(id, _)| id);
+
             self.input.cursor_moved = false;
         }
 
@@ -325,6 +397,7 @@ impl App {
         } else {
             self.ui.cursor_world = None;
         }
+
     }
 
     /// Split a parent face by cutting out a region (with optional holes).
@@ -407,6 +480,92 @@ impl App {
                 mesh.add_polygon_face_flush(&points_3d, normal);
             } else {
                 mesh.add_polygon_face_with_holes_flush(&points_3d, &holes, normal);
+            }
+        }
+    }
+
+    fn save_project(&mut self, force_dialog: bool) {
+        let path = if force_dialog || self.ui.current_project_path.is_none() {
+            rfd::FileDialog::new()
+                .add_filter("GraniteX Project", &["gnx"])
+                .set_file_name("untitled.gnx")
+                .save_file()
+        } else {
+            self.ui.current_project_path.clone()
+        };
+
+        if let Some(path) = path {
+            if let Some(r) = &self.renderer {
+                let (target, dist, yaw, pitch) = r.camera_state();
+                let camera_data = crate::project::CameraData { target, distance: dist, yaw, pitch };
+                match crate::project::save_project(&path, &r.mesh, camera_data) {
+                    Ok(()) => {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        self.ui.toasts.push(crate::ui::Toast::new(format!("Saved {}", name)));
+                        self.ui.current_project_path = Some(path);
+                    }
+                    Err(e) => {
+                        self.ui.toasts.push(crate::ui::Toast::new(format!("Save failed: {}", e)));
+                    }
+                }
+            }
+        }
+    }
+
+    fn open_project(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("GraniteX Project", &["gnx"])
+            .pick_file();
+
+        if let Some(path) = file {
+            match crate::project::load_project(&path) {
+                Ok((mesh, camera_data)) => {
+                    if let Some(r) = &mut self.renderer {
+                        r.load_mesh(mesh);
+                        r.restore_camera_state(camera_data.target, camera_data.distance, camera_data.yaw, camera_data.pitch);
+                        self.history.clear();
+                        self.sketch = None;
+                        self.ui.operation_history.clear();
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        self.ui.toasts.push(crate::ui::Toast::new(format!("Opened {}", name)));
+                        self.ui.current_project_path = Some(path);
+                    }
+                }
+                Err(e) => {
+                    self.ui.toasts.push(crate::ui::Toast::new(format!("Open failed: {}", e)));
+                }
+            }
+        }
+    }
+
+    fn export_file(&mut self, format: &str) {
+        let (filter_name, ext) = match format {
+            "stl" => ("STL Files", "stl"),
+            "obj" => ("OBJ Files", "obj"),
+            _ => return,
+        };
+
+        let file = rfd::FileDialog::new()
+            .add_filter(filter_name, &[ext])
+            .set_file_name(format!("export.{}", ext))
+            .save_file();
+
+        if let Some(path) = file {
+            if let Some(r) = &self.renderer {
+                let result = match format {
+                    "stl" => crate::export::export_stl(&r.mesh, &path),
+                    "obj" => crate::export::export_obj(&r.mesh, &path),
+                    _ => Ok(()),
+                };
+                match result {
+                    Ok(()) => {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        self.ui.toasts.push(crate::ui::Toast::new(format!("Exported {}", name)));
+                    }
+                    Err(e) => {
+                        self.ui.toasts.push(crate::ui::Toast::new(format!("Export failed: {}", e)));
+                    }
+                }
             }
         }
     }

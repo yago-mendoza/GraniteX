@@ -18,6 +18,7 @@ mod gizmo;
 pub mod mesh;
 mod preview;
 mod sketch_renderer;
+mod construction_renderer;
 pub(crate) mod picking;
 
 use gpu_state::GpuState;
@@ -26,6 +27,7 @@ use grid::GridPipeline;
 use gizmo::GizmoPipeline;
 use preview::PreviewPipeline;
 use sketch_renderer::SketchRenderer;
+use construction_renderer::ConstructionRenderer;
 use camera::Camera;
 pub use mesh::Mesh;
 
@@ -39,6 +41,7 @@ pub struct Renderer {
     gizmo: GizmoPipeline,
     preview: PreviewPipeline,
     sketch_renderer: SketchRenderer,
+    construction_renderer: ConstructionRenderer,
     camera: Camera,
     egui_renderer: egui_wgpu::Renderer,
 
@@ -61,6 +64,7 @@ impl Renderer {
         let gizmo = GizmoPipeline::new(&gpu.device, &gpu.config, &camera);
         let preview = PreviewPipeline::new(&gpu.device, &gpu.config, &camera);
         let sketch_renderer = SketchRenderer::new(&gpu.device, &gpu.config, &camera);
+        let construction_renderer = ConstructionRenderer::new(&gpu.device, &gpu.config, &camera);
 
         let egui_renderer = egui_wgpu::Renderer::new(
             &gpu.device,
@@ -77,6 +81,7 @@ impl Renderer {
             gizmo,
             preview,
             sketch_renderer,
+            construction_renderer,
             camera,
             egui_renderer,
             mesh,
@@ -104,6 +109,7 @@ impl Renderer {
         self.gizmo.update_camera(&self.gpu.queue, &self.camera);
         self.preview.update_camera(&self.gpu.queue, &self.camera);
         self.sketch_renderer.update_camera(&self.gpu.queue, &self.camera);
+        self.construction_renderer.update_camera(&self.gpu.queue, &self.camera);
     }
 
     pub fn orbit(&mut self, dx: f32, dy: f32) {
@@ -118,6 +124,35 @@ impl Renderer {
 
     pub fn zoom(&mut self, delta: f32) {
         self.camera.zoom(delta);
+        self.sync_camera();
+    }
+
+    /// Zoom toward a screen point (SolidWorks-style: zoom follows cursor).
+    pub fn zoom_toward_screen(&mut self, delta: f32, screen_x: f32, screen_y: f32) {
+        // Cast ray from cursor into scene
+        let (ray_o, ray_d) = self.screen_to_ray(screen_x, screen_y);
+
+        // Try to hit the mesh first
+        let view_proj = self.camera.projection_matrix() * self.camera.view_matrix();
+        let hit = picking::pick_face(
+            screen_x, screen_y,
+            self.gpu.config.width as f32, self.gpu.config.height as f32,
+            view_proj, &self.mesh,
+        );
+
+        let world_point = if let Some(h) = hit {
+            h.hit_point
+        } else {
+            // Fallback: intersect with XZ plane at y=0
+            if ray_d.y.abs() > 1e-6 {
+                let t = -ray_o.y / ray_d.y;
+                if t > 0.0 { ray_o + ray_d * t } else { self.camera.target }
+            } else {
+                self.camera.target
+            }
+        };
+
+        self.camera.zoom_toward(delta, world_point);
         self.sync_camera();
     }
 
@@ -151,6 +186,42 @@ impl Renderer {
 
         self.selected_face = result.map(|r| r.face_id);
         self.mesh_pipeline.set_selected_face(&self.gpu.queue, self.selected_face);
+    }
+
+    /// Multi-select: Shift adds to selection, normal click replaces.
+    pub fn try_select_face_multi(&mut self, screen_x: f32, screen_y: f32, shift_held: bool) {
+        let view_proj = self.camera.projection_matrix() * self.camera.view_matrix();
+        let result = picking::pick_face(
+            screen_x, screen_y,
+            self.gpu.config.width as f32, self.gpu.config.height as f32,
+            view_proj, &self.mesh,
+        );
+
+        if shift_held {
+            // Toggle face in selection — for now just update selected_face
+            // (full multi-select with storage buffers is a future enhancement)
+            if let Some(r) = result {
+                if self.selected_face == Some(r.face_id) {
+                    self.selected_face = None;
+                } else {
+                    self.selected_face = Some(r.face_id);
+                }
+            }
+        } else {
+            self.selected_face = result.map(|r| r.face_id);
+        }
+        self.mesh_pipeline.set_selected_face(&self.gpu.queue, self.selected_face);
+    }
+
+    /// Pick the nearest edge (screen-space distance).
+    pub fn try_pick_edge(&self, screen_x: f32, screen_y: f32, threshold_px: f32) -> Option<(glam::Vec3, glam::Vec3)> {
+        picking::pick_edge(
+            screen_x, screen_y,
+            self.gpu.config.width as f32, self.gpu.config.height as f32,
+            self.camera.projection_matrix() * self.camera.view_matrix(),
+            &self.mesh,
+            threshold_px,
+        )
     }
 
     /// Update hover highlight (face under cursor, no click needed).
@@ -243,6 +314,12 @@ impl Renderer {
         self.sketch_renderer.append_region_fills(&self.gpu.device, regions, selected_region, plane);
     }
 
+    // --- Construction geometry ---
+
+    pub fn update_construction(&mut self, cg: &crate::construction::ConstructionGeometry) {
+        self.construction_renderer.update(&self.gpu.device, cg, self.camera.distance);
+    }
+
     pub fn clear_sketch(&mut self) {
         self.sketch_renderer.clear();
     }
@@ -261,6 +338,15 @@ impl Renderer {
 
     pub fn camera_distance(&self) -> f32 {
         self.camera.distance
+    }
+
+    pub fn camera_state(&self) -> ([f32; 3], f32, f32, f32) {
+        self.camera.state()
+    }
+
+    pub fn restore_camera_state(&mut self, target: [f32; 3], distance: f32, yaw: f32, pitch: f32) {
+        self.camera.restore_state(target, distance, yaw, pitch);
+        self.sync_camera();
     }
 
     /// Unproject screen coordinates to a ray (origin, direction).
@@ -418,7 +504,8 @@ impl Renderer {
                     view: &msaa_view,
                     resolve_target: Some(&surface_view),
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.1, b: 0.12, a: 1.0 }),
+                        // SolidWorks-style light gray background (model pops against it)
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.76, g: 0.78, b: 0.82, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -437,6 +524,7 @@ impl Renderer {
             if self.show_grid {
                 self.grid.draw(&mut pass);
             }
+            self.construction_renderer.draw(&mut pass);
             if self.show_wireframe {
                 // Wireframe only mode
                 self.mesh_pipeline.draw_wireframe(&mut pass);

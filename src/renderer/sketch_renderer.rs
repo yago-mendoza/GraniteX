@@ -144,6 +144,7 @@ impl SketchRenderer {
         let dot_size = 0.008;
 
         let confirmed_color = [0.15, 0.85, 0.3];  // green
+        let construction_color = [1.0, 0.6, 0.15]; // orange for construction lines
         let preview_color = [1.0, 0.55, 0.1];      // orange
         let dot_color = [0.95, 0.9, 0.2];          // yellow
 
@@ -153,6 +154,11 @@ impl SketchRenderer {
 
         for (p0, p1) in sketch.confirmed_lines_3d() {
             self.push_line_on_plane(&mut verts, p0, p1, normal, line_width, confirmed_color);
+        }
+
+        // Construction lines rendered in orange, slightly thinner
+        for (p0, p1) in sketch.construction_lines_3d() {
+            self.push_line_on_plane(&mut verts, p0, p1, normal, line_width * 0.7, construction_color);
         }
 
         for (p0, p1) in sketch.preview_lines_3d(tool) {

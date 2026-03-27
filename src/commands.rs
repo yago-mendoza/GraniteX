@@ -86,6 +86,12 @@ impl CommandHistory {
         }
     }
 
+    /// Clear all undo/redo history (for new scene).
+    pub fn clear(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
     /// Redo: restore next mesh state.
     /// Returns true if redo was performed.
     pub fn redo(&mut self, mesh: &mut Mesh) -> bool {

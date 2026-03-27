@@ -1,6 +1,6 @@
 # GraniteX — Master TODO
 
-Last updated: 2026-03-26 (Session 6)
+Last updated: 2026-03-27 (Session 12)
 
 ## Legend
 - [ ] Not started
@@ -59,10 +59,10 @@ Last updated: 2026-03-26 (Session 6)
 - [x] **P0** Ray casting from mouse into scene
 - [x] **P0** Face selection (highlight selected face)
 - [x] **P1** Hover pre-highlight (SolidWorks-style face highlight on mouse-over)
-- [ ] **P0** Edge selection
+- [x] **P0** Edge selection (2026-03-27 — Tab toggle, click to select, shows length)
 - [ ] **P0** Vertex selection
-- [ ] **P1** Multi-select (Shift+click)
-- [ ] **P1** Selection mode toggle (face/edge/vertex)
+- [x] **P1** Multi-select (Shift+click) (2026-03-27 — toggles face selection)
+- [~] **P1** Selection mode toggle (face/edge/vertex) (2026-03-27 — face/edge done, vertex pending)
 - [ ] **P1** Selection highlighting (color overlay)
 - [ ] **P2** Marquee/box selection
 - [ ] **P2** Selection info in inspector
@@ -97,10 +97,10 @@ Last updated: 2026-03-26 (Session 6)
 - [x] **P0** Command pattern for all operations (snapshot-based)
 - [x] **P0** Undo stack (Ctrl+Z)
 - [x] **P0** Redo stack (Ctrl+Y)
-- [ ] **P0** Save project (.gnx custom format)
-- [ ] **P0** Load project
+- [x] **P0** Save project (.gnx custom format) (2026-03-27 — JSON-based, Ctrl+S)
+- [x] **P0** Load project (2026-03-27 — Ctrl+O)
 - [ ] **P1** Auto-save
-- [ ] **P1** Export to STL/OBJ
+- [x] **P1** Export to STL/OBJ (2026-03-27 — binary STL + OBJ with normals)
 - [ ] **P2** Recent files list
 
 ## Phase 7: 2D Sketch Mode (Target: 2026-07-15) — PARTIAL
@@ -190,7 +190,7 @@ Last updated: 2026-03-26 (Session 6)
 
 ## Backlog (Unprioritized)
 
-- Measurement tool (distance, angle, area)
+- ~~Measurement tool (distance, angle, area)~~ — DONE (2026-03-27, two-click point-to-point, M key, shows dX/dY/dZ)
 - Section view / clipping plane
 - Mesh repair (close holes, fix normals)
 - Point cloud import
